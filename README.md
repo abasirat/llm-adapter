@@ -2,3 +2,13 @@ Transformer-based encoders, such as large language models, are becoming one of t
 
 Ali Basirat, 2024, Efficient Structured Prediction with Transformer, Northern European Journal for Language Technology (NEJLT).
 
+In the example below, we wrap a BERT encoder with an `Adapter` module.
+```python
+import torch, transformers
+from adapter import Adapter
+
+bert = transformers.AutoModel.from_pretrained('bert-large-cased')
+adapter = Adapter(bert)
+```
+The object `adapter` includes the BERT model plus an adapter block on top of it. 
+
