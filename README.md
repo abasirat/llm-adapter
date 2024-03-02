@@ -10,5 +10,5 @@ from adapter import Adapter
 bert = transformers.AutoModel.from_pretrained('bert-large-cased')
 adapter = Adapter(bert)
 ```
-The object `adapter` includes the BERT model plus an adapter block on top of it. 
+The object `adapter` includes the BERT model plus an adapter block on top of it. Note that the `adapter` freezes the BERT model during training (i.e., only the added parameters are trained). 
 
