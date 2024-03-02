@@ -1,6 +1,5 @@
 import torch
 import transformers
-from attention_fusion import AttentionFusion
 from adapter import Adapter
 
 import unittest
@@ -22,14 +21,6 @@ class Encoder(torch.nn.Module):
         return self.adapter(**x)
 
 class EncoderTest(unittest.TestCase):
-
-    def test_attention_fusion(self):
-        print("Attention Fusion")
-        adapter = AttentionFusion(bert)
-        adapter.print_trainable_parameters()
-        encoder = Encoder(tokenizer, adapter)
-        y = encoder(text)
-        print(y.last_hidden_state.shape)
 
     def test_adapter(self):
         print("The Adapter Model")
