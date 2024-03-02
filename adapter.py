@@ -60,6 +60,7 @@ class Adapter(torch.nn.Module):
             encoder, 
             aggregation_layers=None,
             num_heads=2,
+            hidden_size=16,
             dropout=0.1,
             tailor_attention=True
         ):
@@ -70,7 +71,6 @@ class Adapter(torch.nn.Module):
             encoder = transformers.AutoModel.from_pretrained(encoder)
 
         input_size = encoder.config.hidden_size
-        hidden_size = max( encoder.config.hidden_size // 10, 5 )
         num_hidden_layers = encoder.config.num_hidden_layers + 1
 
 
