@@ -6,7 +6,7 @@ Ali Basirat, 2024, **Efficient Structured Prediction with Transformer Encoders**
 
 In the example below, we wrap a BERT encoder with an `Adapter` module.
 ```python
-import torch, transformers
+import transformers
 from adapter import Adapter
 
 bert = transformers.AutoModel.from_pretrained('bert-large-cased')
