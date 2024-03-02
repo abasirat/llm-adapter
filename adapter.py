@@ -88,7 +88,8 @@ class Adapter(torch.nn.Module):
                 num_heads = num_heads, 
                 kdim = hidden_size,
                 vdim = hidden_size,
-                batch_first = True)
+                batch_first = True
+        )
 
         torch.nn.init.xavier_uniform_(self.token_layer_attention.in_proj_weight)
         torch.nn.init.xavier_uniform_(self.token_layer_attention.out_proj.weight)

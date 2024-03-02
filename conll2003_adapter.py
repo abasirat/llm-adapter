@@ -1,7 +1,7 @@
 # based on https://huggingface.co/learn/nlp-course/chapter7/2
 
 from datasets import load_dataset
-from transformers import AutoTokenizer
+from transformers import GPT2TokenizerFast, BertTokenizerFast
 from transformers import DataCollatorForTokenClassification
 from transformers import AutoModelForTokenClassification
 from transformers import TrainingArguments
@@ -11,6 +11,8 @@ import numpy as np
 import torch
 from attention_fusion import AttentionFusion, TokenClassifier
 from adapter import Adapter
+
+import pdb
 
 def align_labels_with_tokens(labels, word_ids):
     new_labels = []
@@ -28,9 +30,10 @@ def align_labels_with_tokens(labels, word_ids):
             # Same word as previous token
             label = labels[word_id]
             # If the label is B-XXX we change it to I-XXX
-            if label % 2 == 1:
-                label += 1
-            new_labels.append(label)
+            #if label % 2 == 1:
+            #    label += 1
+            #new_labels.append(label)
+            new_labels.append(-100)
 
     return new_labels
 
@@ -79,8 +82,15 @@ if __name__ == '__main__':
     label_names = ner_feature.feature.names
 
 
-    model_checkpoint = "bert-base-cased"
-    tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+    #model_checkpoint = "bert-base-cased"
+    model_checkpoint = "gpt2-medium"
+    if model_checkpoint.startswith("bert"):
+        tokenizer = BertTokenizerFast.from_pretrained(model_checkpoint, add_prefix_space=False)
+    elif model_checkpoint.startswith("gpt"):
+        tokenizer = GPT2TokenizerFast.from_pretrained(model_checkpoint, add_prefix_space=True)
+    
+    tokenizer.pad_token = '[PAD]'
+    tokenizer.eos_token = '[PAD]'
 
     tokenized_datasets = raw_datasets.map(
                 tokenize_and_align_labels,
@@ -106,7 +116,7 @@ if __name__ == '__main__':
         evaluation_strategy="epoch",
         save_strategy="no",
         learning_rate=1e-3,
-        num_train_epochs=100,
+        num_train_epochs=10,
         weight_decay=0.01,
         push_to_hub=False,
         per_device_train_batch_size=32,
@@ -114,7 +124,11 @@ if __name__ == '__main__':
         dataloader_num_workers=1,
     )
 
-    model.bert = Adapter(model.bert)
+    if model_checkpoint.startswith("bert"):
+        model.bert = Adapter(model.bert)
+    elif model_checkpoint.startswith("gpt"):
+        model.bert = Adapter(model.transformer)
+    
     model.classifier = TokenClassifier(
             model.config.hidden_size, 
             len(label2id)
