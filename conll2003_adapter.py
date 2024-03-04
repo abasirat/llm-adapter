@@ -75,7 +75,7 @@ def set_seed(seed):
     if torch.backends.mps.is_available():
         torch.mps.manual_seed(seed)
 
-    # np.random.seed(seed)
+    np.random.seed(seed)
     
 if __name__ == '__main__':
     if torch.cuda.is_available(): 
@@ -135,7 +135,7 @@ if __name__ == '__main__':
         dataloader_num_workers=3,
     )
 
-    adapter_params = {'enable_tailor':False, 'num_heads':8, 'hidden_size':16, 'tailor_attention':True}
+    adapter_params = {'enable_tailor':True, 'num_heads':2, 'hidden_size':16, 'tailor_attention':True}
     if model_checkpoint.startswith("bert"):
         model.bert = Adapter(model.bert, **adapter_params).to(device)
     elif model_checkpoint.startswith("gpt"):
