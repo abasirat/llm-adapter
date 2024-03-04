@@ -14,4 +14,6 @@ adapter = Adapter(bert)
 ```
 The object `adapter` includes the BERT model plus an adapter block on top of it. Note that the `adapter` freezes the BERT model during training (i.e., only the added parameters are trained). 
 
+As an illustration, we have included a sample code in `conll2003_adapter.py` that demonstrates how to integrate the `adapter` into a BERT or GPT model for named entity recognition (NER). These implementations are built on the standard huggingface models but can be expanded to other Transformer-based encoders.  
+
 

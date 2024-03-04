@@ -1,9 +1,9 @@
 import torch
 from typing import List, Optional, Tuple, Union
-from transformers.modeling_outputs import BaseModelOutputWithPoolingAndCrossAttentions
+from transformers.modeling_outputs import BaseModelOutputWithPoolingAndCrossAttentions, BaseModelOutputWithPastAndCrossAttentions
 
 class Tailor(torch.nn.Module):
-    def __init__(self, input_size, dropout, hdim, num_heads, tailor_attention):
+    def __init__(self, input_size:int, dropout:float, hdim:int, num_heads:int, tailor_attention:bool):
         super(Tailor, self).__init__()
         self.FF = torch.nn.Sequential(
                 torch.nn.LayerNorm(input_size, eps=1e-12),
@@ -73,10 +73,16 @@ class Adapter(torch.nn.Module):
         input_size = encoder.config.hidden_size
         num_hidden_layers = encoder.config.num_hidden_layers + 1
 
-
         self.encoder = encoder
 
-        if aggregation_layers is None: aggregation_layers = [True]*num_hidden_layers
+        if aggregation_layers is None: 
+            aggregation_layers = [True]*num_hidden_layers
+        else:
+            # aggregation_layers = [l in aggregation_layers for l in range(num_hidden_layers)]
+            print("this implementation works only on all layers")
+            raise NotImplementedError
+
+
         assert len(aggregation_layers) == num_hidden_layers
         self.aggregation_layers = torch.tensor(aggregation_layers, dtype=torch.bool)
 
@@ -98,6 +104,16 @@ class Adapter(torch.nn.Module):
 
         for param in self.encoder.parameters(): 
             param.requires_grad = False
+        
+        if self.encoder.name_or_path.startswith("gpt"):
+            self.forward = self.forward_gpt
+        elif self.encoder.name_or_path.startswith("bert"):
+            self.forward = self.forward_bert
+        else:
+            print("this implementation works only with standard gpt and bert families from huggingface")
+            raise NotImplementedError
+        
+        self.print_trainable_parameters()
 
     def print_trainable_parameters(self):
         """
@@ -131,12 +147,12 @@ class Adapter(torch.nn.Module):
         return r, NQK
 
     def adapter(self, inputs, key_padding_mask=None):
-        inputs = inputs[..., self.aggregation_layers]
+        # inputs = inputs[..., self.aggregation_layers]
         r, att = self.aggregator(inputs, key_padding_mask) 
         r += self.tailor(r, key_padding_mask)
         return r, att
 
-    def forward(self, 
+    def forward_bert(self, 
         input_ids: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         token_type_ids: Optional[torch.Tensor] = None,
@@ -164,15 +180,60 @@ class Adapter(torch.nn.Module):
         key_padding_mask = torch.logical_not(attention_mask)
         #hs = torch.stack(encoder_outputs[2], -1)
         hs = torch.stack(encoder_outputs.hidden_states, -1)
-
+        #pdb.set_trace()
         aggregated_hidden_state, layer_token_attention = self.adapter(hs, key_padding_mask)
 
         return BaseModelOutputWithPoolingAndCrossAttentions(
                 last_hidden_state = aggregated_hidden_state,
-                #pooler_output = None,
-                #past_key_values=encoder_outputs.past_key_values,
-                #hidden_states=encoder_outputs.hidden_states,
-                #attentions=encoder_outputs.attentions,
-                #cross_attentions=encoder_outputs.cross_attentions,
+                pooler_output = encoder_outputs.pooler_output,
+                past_key_values=encoder_outputs.past_key_values,
+                hidden_states=encoder_outputs.hidden_states if output_hidden_states else None,
+                attentions=encoder_outputs.attentions,
+                cross_attentions=encoder_outputs.cross_attentions,
         )
 
+    def forward_gpt(
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Tuple[Tuple[torch.Tensor]]] = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        token_type_ids: Optional[torch.LongTensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        head_mask: Optional[torch.FloatTensor] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        encoder_hidden_states: Optional[torch.Tensor] = None,
+        encoder_attention_mask: Optional[torch.FloatTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> Union[Tuple, BaseModelOutputWithPastAndCrossAttentions]:
+        
+        encoder_outputs =  self.encoder(
+                input_ids,
+                past_key_values=past_key_values,
+                attention_mask=attention_mask,
+                token_type_ids=token_type_ids,
+                position_ids=position_ids,
+                head_mask=head_mask,
+                inputs_embeds=inputs_embeds,
+                encoder_hidden_states=encoder_hidden_states,
+                encoder_attention_mask=encoder_attention_mask,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                output_hidden_states=True,
+                return_dict=return_dict,
+        )
+        
+        key_padding_mask = torch.logical_not(attention_mask)
+        #hs = torch.stack(encoder_outputs[2], -1)
+        hs = torch.stack(encoder_outputs.hidden_states, -1)
+        aggregated_hidden_state, layer_token_attention = self.adapter(hs, key_padding_mask)
+
+        return BaseModelOutputWithPastAndCrossAttentions(
+                    last_hidden_state=aggregated_hidden_state,
+                    past_key_values=encoder_outputs.past_key_values,
+                    hidden_states=encoder_outputs.hidden_states if output_hidden_states else None,
+                    attentions=encoder_outputs.attentions,
+                    cross_attentions=encoder_outputs.cross_attentions,
+                )
