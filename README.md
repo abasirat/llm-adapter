@@ -36,6 +36,6 @@ If you utilize this software for research purposes, please include the following
 
 - For further memory efficiency gain, you can disable the adaptor block whose contribution is more apparent to the document classification tasks rather than the structured prediction. For detailed analysis of the tailor block see Section 6 of the paper.
 ```python
-adapter = Adapter(bert, tailor_attention=False)
+adapter = Adapter(bert, enable_tailor=False)
 ```
 - Saving the encoder activation once and reusing it while training is recommended to obtain a high-efficiency gain during training. See section 5.3 for further detailed information on this. 
