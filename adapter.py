@@ -173,7 +173,6 @@ class Adapter(torch.nn.Module):
         key_padding_mask = torch.logical_not(attention_mask)
         #hs = torch.stack(encoder_outputs[2], -1)
         hs = torch.stack(encoder_outputs.hidden_states, -1)
-        #pdb.set_trace()
         aggregated_hidden_state, layer_token_attention = self.adapter(hs, key_padding_mask)
 
         return BaseModelOutputWithPoolingAndCrossAttentions(

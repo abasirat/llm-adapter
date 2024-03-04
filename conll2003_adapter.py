@@ -94,7 +94,7 @@ if __name__ == '__main__':
     label_names = ner_feature.feature.names
 
     model_checkpoint = "bert-large-cased"
-    #model_checkpoint = "gpt2"
+    # model_checkpoint = "gpt2"
     if model_checkpoint.startswith("bert"):
         tokenizer = BertTokenizerFast.from_pretrained(model_checkpoint, add_prefix_space=True)
     elif model_checkpoint.startswith("gpt"):
