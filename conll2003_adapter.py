@@ -135,10 +135,11 @@ if __name__ == '__main__':
         dataloader_num_workers=3,
     )
 
+    adapter_params = {'enable_tailor':False, 'num_heads':8, 'hidden_size':16, 'tailor_attention':True}
     if model_checkpoint.startswith("bert"):
-        model.bert = Adapter(model.bert, enable_tailor=True).to(device)
+        model.bert = Adapter(model.bert, **adapter_params).to(device)
     elif model_checkpoint.startswith("gpt"):
-        model.transformer = Adapter(model.transformer, enable_tailor=True).to(device)
+        model.transformer = Adapter(model.transformer, **adapter_params).to(device)
     
     model.classifier = TokenClassifier(
             model.config.hidden_size, 
