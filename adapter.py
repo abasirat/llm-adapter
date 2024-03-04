@@ -40,17 +40,7 @@ class Tailor(torch.nn.Module):
             _, NQK = self.self_attention(Q,Q,Q,
                     key_padding_mask=key_padding_mask,
                     need_weights=True)
-            #NQK = torch.bmm(Q,K.transpose(1,2))/torch.sqrt(torch.tensor(Q.shape[2]))
-            #NQK[key_padding_mask] = 0.0 #float('-inf')
-            #NQK = torch.nn.Softmax(-1)(torch.flatten(NQK,1,2)).view(NQK.size())
-            #NQK += att.mean(1).mean(-1)
-            #NQK = torch.einsum('bhsSl,hl->bsS',att,self.g_att)
             x = NQK.bmm(x)
-
-        #NQK = torch.bmm(x,x.transpose(1,2))/torch.sqrt(torch.tensor(x.shape[2]))
-        #NQK[key_padding_mask] = 0.0 #float('-inf')
-        #NQK = torch.nn.Softmax(-1)(torch.flatten(NQK,1,2)).view(NQK.size())
-        #x = NQK.bmm(x)
 
         return x
 
@@ -62,7 +52,8 @@ class Adapter(torch.nn.Module):
             num_heads=2,
             hidden_size=16,
             dropout=0.1,
-            tailor_attention=True
+            enable_tailor=True,
+            tailor_attention=True,
         ):
         super(Adapter, self).__init__()
 
@@ -100,7 +91,10 @@ class Adapter(torch.nn.Module):
         torch.nn.init.xavier_uniform_(self.token_layer_attention.out_proj.weight)
         #self.token_layer_attention.out_proj.bias.fill_(0.0)
 
-        self.tailor = Tailor(input_size, dropout, hidden_size, num_heads, tailor_attention)
+        if enable_tailor:
+            self.tailor = Tailor(input_size, dropout, hidden_size, num_heads, tailor_attention)
+        else:
+            self.tailor = None
 
         for param in self.encoder.parameters(): 
             param.requires_grad = False
@@ -140,16 +134,15 @@ class Adapter(torch.nn.Module):
         K = torch.mean(inputs,1).transpose(1,2)
         K = self.key_projector(K)
         _, NQK = self.token_layer_attention(Q,K,K,need_weights=True)
-        #NQK = torch.bmm(Q,K.transpose(1,2))/torch.sqrt(torch.tensor(x.shape[2]))
-        NQK[key_padding_mask] = 0 #float('-inf') 
-        #NQK = torch.nn.Softmax(-1)(torch.flatten(QK,1,2)).view(QK.size())
+        NQK[key_padding_mask] = 0 
         r = torch.einsum('bdnm,bnm->bnd', inputs.transpose(1,2), NQK)
         return r, NQK
 
     def adapter(self, inputs, key_padding_mask=None):
         # inputs = inputs[..., self.aggregation_layers]
         r, att = self.aggregator(inputs, key_padding_mask) 
-        r += self.tailor(r, key_padding_mask)
+        if self.tailor:
+            r += self.tailor(r, key_padding_mask)
         return r, att
 
     def forward_bert(self, 

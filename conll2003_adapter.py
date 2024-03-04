@@ -136,9 +136,9 @@ if __name__ == '__main__':
     )
 
     if model_checkpoint.startswith("bert"):
-        model.bert = Adapter(model.bert).to(device)
+        model.bert = Adapter(model.bert, enable_tailor=True).to(device)
     elif model_checkpoint.startswith("gpt"):
-        model.transformer = Adapter(model.transformer).to(device)
+        model.transformer = Adapter(model.transformer, enable_tailor=True).to(device)
     
     model.classifier = TokenClassifier(
             model.config.hidden_size, 
