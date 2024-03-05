@@ -24,6 +24,7 @@ bert-large-cased | 89.3
 roberta-base | 89.3
 roberta-large | 89.8
 gpt2 | 83.1 
+gpt2-medium | 81.1 
 
 If you utilize this software for research purposes, please include the following citation:
 
