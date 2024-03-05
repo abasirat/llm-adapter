@@ -15,7 +15,15 @@ adapter = Adapter(bert)
 ```
 The object `adapter` includes the BERT model plus an adapter block on top of it. Note that the `adapter` freezes the BERT model during training (i.e., only the added parameters are trained). 
 
-As an example, we have included a sample code in `conll2003_adapter.py` that demonstrates how to integrate the `adapter` into a BERT or GPT model for named entity recognition (NER). These implementations are built on the standard huggingface models but can be expanded to other Transformer-based encoders. The code results in an $F_1$-score of $89.3$ and $83.1$ for named entity recognition on the CoNLL-2003 data set with `bert-large-cased` and `gpt2` models, respectively.  
+As an example, we have included a sample code in `conll2003_adapter.py` that demonstrates how to integrate the `adapter` into a BERT or GPT model for named entity recognition (NER). These implementations are built on the standard huggingface models but can be extended to other Transformer-based encoders. The code's performance for named entity recognition on the CoNLL-2003 data set with a fixed seed value is as below: 
+
+Model | F1-score 
+--- | ---
+bert-base-cased | 88.8 
+bert-large-cased | 89.3 
+roberta-base | 89.3
+roberta-large | 89.8
+gpt2 | 83.1 
 
 If you utilize this software for research purposes, please include the following citation:
 
