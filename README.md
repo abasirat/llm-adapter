@@ -32,12 +32,11 @@ If you utilize this software for research purposes, please include the following
         author    = {Ali Basirat},
         title     = {Efficient Structured Prediction with Transformer Encoders},
         journal   = {Northern European Journal of Language Technology ({NEJLT})},
-        volume    = {X},
-        pages     = {xx--xx},
+        volume    = {10},
+        number    = {1},
+        pages     = {1--13},
         year      = {2024},
-        url       = {https://xx.com},
-        biburl    = {xx},
-        bibsource = {xx}
+        url       = {https://nejlt.ep.liu.se/article/view/4932},
     }
 
 
