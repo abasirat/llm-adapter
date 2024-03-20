@@ -28,7 +28,7 @@ gpt2-medium | 81.1
 
 If you utilize this software for research purposes, please include the following citation:
 
-    @article{XX,
+    @article{basirat2024adapter,
         author    = {Ali Basirat},
         title     = {Efficient Structured Prediction with Transformer Encoders},
         journal   = {The Northern European Journal of Language Technology ({NEJLT})},
