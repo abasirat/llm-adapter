@@ -134,7 +134,8 @@ class Adapter(torch.nn.Module):
         K = torch.mean(inputs,1).transpose(1,2)
         K = self.key_projector(K)
         _, NQK = self.token_layer_attention(Q,K,K,need_weights=True)
-        NQK[key_padding_mask] = 0 
+        if key_padding_mask is not None:
+            NQK[key_padding_mask] = 0
         r = torch.einsum('bdnm,bnm->bnd', inputs.transpose(1,2), NQK)
         return r, NQK
 
@@ -217,7 +218,8 @@ class Adapter(torch.nn.Module):
                 return_dict=return_dict,
         )
         
-        key_padding_mask = torch.logical_not(attention_mask)
+        # do not pad for new generated input if only decoder
+        key_padding_mask = torch.logical_not(attention_mask) if self.encoder.config.is_encoder_decoder else None 
         #hs = torch.stack(encoder_outputs[2], -1)
         hs = torch.stack(encoder_outputs.hidden_states, -1)
         aggregated_hidden_state, layer_token_attention = self.adapter(hs, key_padding_mask)
