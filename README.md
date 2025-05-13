@@ -37,6 +37,7 @@ If you utilize this software for research purposes, please include the following
         pages     = {1--13},
         year      = {2024},
         url       = {https://nejlt.ep.liu.se/article/view/4932},
+        publisher   = {Link\"oping University Electronic Press (LiU E-Press)}
     }
 
 
