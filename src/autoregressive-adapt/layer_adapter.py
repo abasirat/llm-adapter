@@ -2,99 +2,35 @@ import torch
 from typing import List, Optional, Tuple, Union
 from transformers.modeling_outputs import BaseModelOutputWithPoolingAndCrossAttentions, BaseModelOutputWithPastAndCrossAttentions
 
-class Tailor(torch.nn.Module):
-    def __init__(self, input_size:int, dropout:float, hdim:int, num_heads:int, tailor_attention:bool):
-        super(Tailor, self).__init__()
-        self.FF = torch.nn.Sequential(
-                torch.nn.LayerNorm(input_size, eps=1e-12),
-                torch.nn.Linear(input_size, input_size),
-                torch.nn.Dropout(dropout),
-                torch.nn.ReLU()
-                )
-
-        self.tailor_attention = tailor_attention
-
-        if tailor_attention:
-            #self.tailor_key_dim_reducer = torch.nn.Linear(input_size, ff_dim)
-            self.tailor_query_dim_reducer = torch.nn.Linear(input_size, hdim)
-            self.self_attention = torch.nn.MultiheadAttention(
-                    embed_dim = hdim,
-                    num_heads = num_heads,
-                    kdim = hdim,
-                    vdim = hdim,
-                    batch_first = True)
-            self.att_dropout = torch.nn.Dropout(dropout)
-
-            torch.nn.init.xavier_uniform_(self.tailor_query_dim_reducer.weight)
-            torch.nn.init.xavier_uniform_(self.self_attention.in_proj_weight)
-            torch.nn.init.xavier_uniform_(self.self_attention.out_proj.weight)
-
-    def forward(self, inputs, key_padding_mask):
-        x = inputs + self.FF(inputs.clone())
-
-        if self.tailor_attention:
-            x = self.att_dropout(x)
-
-            Q = self.tailor_query_dim_reducer(x)
-            #K = self.tailor_key_dim_reducer(x)
-            _, NQK = self.self_attention(Q,Q,Q,
-                    key_padding_mask=key_padding_mask,
-                    need_weights=True)
-            x = NQK.bmm(x)
-
-        return x
-
-
-class Adapter(torch.nn.Module):
+class LayerAdapter(torch.nn.Module):
     def __init__(self, 
             encoder, 
-            aggregation_layers=None,
-            num_heads=2,
-            hidden_size=16,
-            dropout=0.1,
-            enable_tailor=True,
-            tailor_attention=True,
+            hidden_size=None,
+            num_heads=None
         ):
-        super(Adapter, self).__init__()
-
-        if isinstance(encoder, str):
-            import transformers
-            encoder = transformers.AutoModel.from_pretrained(encoder)
+        super(LayerAdapter, self).__init__()
 
         input_size = encoder.config.hidden_size
-        num_hidden_layers = encoder.config.num_hidden_layers + 1
+        hs = hidden_size or input_size
+        nh = num_heads or encoder.config.n_head
 
         self.encoder = encoder
+        self.config = encoder.config
 
-        if aggregation_layers is None: 
-            aggregation_layers = [True]*num_hidden_layers
-        else:
-            # aggregation_layers = [l in aggregation_layers for l in range(num_hidden_layers)]
-            print("this implementation works only on all layers")
-            raise NotImplementedError
+        self.quey_projection_layer = None
+        self.key_projection_layer = None
 
-
-        assert len(aggregation_layers) == num_hidden_layers
-        self.aggregation_layers = torch.tensor(aggregation_layers, dtype=torch.bool)
-
-        self.key_projector = torch.nn.Linear(input_size, hidden_size)
-        self.query_projector = torch.nn.Linear(input_size, hidden_size)
+        if hidden_size is not None:
+            self.quey_projection_layer = torch.nn.Linear(input_size, hs)
+            self.key_projection_layer = torch.nn.Linear(input_size, hs)
+        
         self.token_layer_attention = torch.nn.MultiheadAttention(
-                embed_dim = hidden_size, 
-                num_heads = num_heads, 
-                kdim = hidden_size,
-                vdim = hidden_size,
+                embed_dim = hs, 
+                num_heads = nh, 
+                kdim = hs,
+                vdim = hs,
                 batch_first = True
         )
-
-        torch.nn.init.xavier_uniform_(self.token_layer_attention.in_proj_weight)
-        torch.nn.init.xavier_uniform_(self.token_layer_attention.out_proj.weight)
-        #self.token_layer_attention.out_proj.bias.fill_(0.0)
-
-        if enable_tailor:
-            self.tailor = Tailor(input_size, dropout, hidden_size, num_heads, tailor_attention)
-        else:
-            self.tailor = None
 
         for param in self.encoder.parameters(): 
             param.requires_grad = False
@@ -103,13 +39,11 @@ class Adapter(torch.nn.Module):
             self.forward = self.forward_gpt
         elif self.encoder.name_or_path.startswith("bert"):
             self.forward = self.forward_bert
-        elif self.encoder.name_or_path.startswith("roberta"):
-            self.forward = self.forward_bert
         else:
             print("this implementation works only with standard gpt and bert families from huggingface")
             raise NotImplementedError
         
-        self.print_trainable_parameters()
+        #self.print_trainable_parameters()
 
     def print_trainable_parameters(self):
         """
@@ -126,27 +60,22 @@ class Adapter(torch.nn.Module):
             all_param += num_params
             if param.requires_grad:
                 trainable_params += num_params
-        print(f"trainable params: {trainable_params:,d} || all params: {all_param:,d} || trainable%: {100 * trainable_params / all_param}")
-
-
+        print(f"layer-wise adapter's trainable params: {trainable_params:,d} || all params: {all_param:,d} || trainable%: {100 * trainable_params / all_param}")
 
     def aggregator(self, inputs, key_padding_mask):
         Q = torch.mean(inputs,-1)
-        Q = self.query_projector(Q)
+        if self.quey_projection_layer:
+            Q = self.quey_projection_layer(Q)
+
         K = torch.mean(inputs,1).transpose(1,2)
-        K = self.key_projector(K)
+        if self.key_projection_layer:
+            K = self.key_projection_layer(K)
+
         _, NQK = self.token_layer_attention(Q,K,K,need_weights=True)
         if key_padding_mask is not None:
-            NQK[key_padding_mask] = 0
+            NQK[key_padding_mask] = 0 
         r = torch.einsum('bdnm,bnm->bnd', inputs.transpose(1,2), NQK)
         return r, NQK
-
-    def adapter(self, inputs, key_padding_mask=None):
-        # inputs = inputs[..., self.aggregation_layers]
-        r, att = self.aggregator(inputs, key_padding_mask) 
-        if self.tailor:
-            r += self.tailor(r, key_padding_mask)
-        return r, att
 
     def forward_bert(self, 
         input_ids: Optional[torch.Tensor] = None,
@@ -174,9 +103,8 @@ class Adapter(torch.nn.Module):
         )
 
         key_padding_mask = torch.logical_not(attention_mask)
-        #hs = torch.stack(encoder_outputs[2], -1)
         hs = torch.stack(encoder_outputs.hidden_states, -1)
-        aggregated_hidden_state, layer_token_attention = self.adapter(hs, key_padding_mask)
+        aggregated_hidden_state, layer_token_attention = self.aggregator(hs, key_padding_mask)
 
         return BaseModelOutputWithPoolingAndCrossAttentions(
                 last_hidden_state = aggregated_hidden_state,
@@ -219,12 +147,14 @@ class Adapter(torch.nn.Module):
                 output_hidden_states=True,
                 return_dict=return_dict,
         )
-        
+
         # do not pad for new generated input if only decoder
-        key_padding_mask = torch.logical_not(attention_mask) if self.encoder.config.is_encoder_decoder else None 
-        #hs = torch.stack(encoder_outputs[2], -1)
-        hs = torch.stack(encoder_outputs.hidden_states, -1)
-        aggregated_hidden_state, layer_token_attention = self.adapter(hs, key_padding_mask)
+        if self.encoder.config.is_encoder_decoder is False:
+            key_padding_mask = None
+        else:
+            key_padding_mask = torch.logical_not(attention_mask)
+        hs = torch.stack(encoder_outputs.hidden_states, -1) 
+        aggregated_hidden_state, layer_token_attention = self.aggregator(hs, key_padding_mask)
 
         return BaseModelOutputWithPastAndCrossAttentions(
                     last_hidden_state=aggregated_hidden_state,
