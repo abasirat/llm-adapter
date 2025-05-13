@@ -103,6 +103,8 @@ class Adapter(torch.nn.Module):
             self.forward = self.forward_gpt
         elif self.encoder.name_or_path.startswith("bert"):
             self.forward = self.forward_bert
+        elif self.encoder.name_or_path.startswith("roberta"):
+            self.forward = self.forward_bert
         else:
             print("this implementation works only with standard gpt and bert families from huggingface")
             raise NotImplementedError
