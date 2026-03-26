@@ -1,26 +1,30 @@
 #!/bin/bash
 
 # Activate Conda
-source ~/miniconda3/etc/profile.d/conda.sh
+#source ~/miniconda3/etc/profile.d/conda.sh
 
 # Activate the specific environment
-conda activate YOUR_ENV_NAME
+conda activate YOUR_CONDA_ENV
 
 echo "Conda environment activated: $(conda env list | grep '*' | awk '{print $1}')"
 
-wandb login YOUR_WANDB_API_KEY
+wandb login 5c7bc6a74f9ce4c1ff724611877a4937c29a475b
+echo "wandb [Ok]"
 
-model_prefix=~/Lab/llm-adapter/models/
-data_prefix=~/Lab/llm-adapter/data/
+model_prefix=path/to/models/
+data_prefix=/path/to/data/
 llm=gpt2
 adapter_type=layer_adapter # layer_adapter, none, or lora
 
 # Option 1: Train from file
 train_data=dr_articles.txt
 model_name=${llm}_$(basename $train_data .txt)_${adapter_type}.pt
+tokenizer_name=${llm}_$(basename $train_data .txt)_tokenizer
 
 path_to_train_data=${data_prefix}/${train_data}
 path_to_model=${model_prefix}/${model_name}
+path_to_tokenizer=${model_prefix}/${tokenizer_name}
+
 num_tailor_layers=0
 num_epochs=1
 chkpt=""
@@ -60,9 +64,11 @@ script=language_adapter.py
 
 # Option 2: Train from HuggingFace dataset (OSCAR - language-specific)
 # Uses dataset_config to load language-specific data
+echo "Begin processing ..."
 python $script \
      $llm \
      $path_to_model \
+     $path_to_tokenizer \
      $num_tailor_layers \
      $adapter_type \
      "$chkpt" \
