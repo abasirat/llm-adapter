@@ -1,0 +1,103 @@
+#!/bin/bash
+
+# Activate Conda
+source ~/miniconda3/etc/profile.d/conda.sh
+
+# Activate the specific environment
+conda activate YOUR_ENV_NAME
+
+echo "Conda environment activated: $(conda env list | grep '*' | awk '{print $1}')"
+
+wandb login YOUR_WANDB_API_KEY
+
+model_prefix=~/Lab/llm-adapter/models/
+data_prefix=~/Lab/llm-adapter/data/
+llm=gpt2
+adapter_type=layer_adapter # layer_adapter, none, or lora
+
+# Option 1: Train from file
+train_data=dr_articles.txt
+model_name=${llm}_$(basename $train_data .txt)_${adapter_type}.pt
+
+path_to_train_data=${data_prefix}/${train_data}
+path_to_model=${model_prefix}/${model_name}
+num_tailor_layers=0
+num_epochs=1
+chkpt=""
+
+proj_name="language_adapt"
+
+# extract the first five letters
+first_five=${train_data:0:5}
+experiment_description=${llm}_${first_five}-${adapter_type}
+
+# wechsel parameters
+src_lang="en"
+tgt_lang="da"
+dictionary="danish"
+
+chunk_size=$((1 * 1024))
+batch_size=4
+
+script=language_adapter.py
+
+# Train with file-based data source
+#python $script \
+#    $llm \
+#    $path_to_model \
+#    $num_tailor_layers \
+#    $adapter_type \
+#    "$chkpt" \
+#    $num_epochs \
+#    $proj_name \
+#    $experiment_description \
+#    $src_lang \
+#    $tgt_lang \
+#    $dictionary \
+#    --train_data $path_to_train_data \
+#    --chunk_size $chunk_size \
+#    --batch_size $batch_size
+
+# Option 2: Train from HuggingFace dataset (OSCAR - language-specific)
+# Uses dataset_config to load language-specific data
+python $script \
+     $llm \
+     $path_to_model \
+     $num_tailor_layers \
+     $adapter_type \
+     "$chkpt" \
+     $num_epochs \
+     $proj_name \
+     $experiment_description \
+     $src_lang \
+     $tgt_lang \
+     $dictionary \
+     --dataset_name "wikimedia/wikipedia" \
+     --dataset_config "20231101.${tgt_lang}" \
+     --dataset_split train \
+     --text_column text \
+     --chunk_size $chunk_size \
+     --batch_size $batch_size
+
+# Option 3: Train from multilingual dataset with language filtering
+# Uncomment to use with datasets that have language information
+#python $script \
+#     $llm \
+#     $path_to_model \
+#     $num_tailor_layers \
+#     $adapter_type \
+#     "$chkpt" \
+#     $num_epochs \
+#     $proj_name \
+#     $experiment_description \
+#     $src_lang \
+#     $tgt_lang \
+#     $dictionary \
+#     --dataset_name wikitext-103 \
+#     --dataset_split train \
+#     --text_column text \
+#     --language_filter $tgt_lang \
+#     --chunk_size $chunk_size \
+#     --batch_size $batch_size
+
+conda deactivate

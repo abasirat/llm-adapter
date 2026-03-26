@@ -15,6 +15,7 @@ setup(
         "wechsel",
         "tqdm",
         "wandb",
+        "datasets",
     ],
     extras_require={
         "dev": [
