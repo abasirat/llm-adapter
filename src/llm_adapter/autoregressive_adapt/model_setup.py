@@ -7,9 +7,13 @@ from wechsel import WECHSEL, load_embeddings
 import os
 import pdb
 
-def setup_model(model_name='gpt2', adapter_type='none', adapter_config=None, num_tailor_layers=0, wechsel_config=None):
+def setup_model(model_name='gpt2', adapter_type='none', adapter_config=None, num_tailor_layers=0, wechsel_config=None, path_to_tokenizer=None):
     
-    tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side='left')
+    if path_to_tokenizer is not None and os.path.exists(path_to_tokenizer):
+        tokenizer = AutoTokenizer.from_pretrained(path_to_tokenizer, padding_side='left')
+        print(f"Loaded tokenizer from {path_to_tokenizer}")
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side='left')
     if tokenizer.pad_token is None:  # If the tokenizer doesn't have a pad_token
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -18,7 +22,8 @@ def setup_model(model_name='gpt2', adapter_type='none', adapter_config=None, num
         device_map='auto',  
     )
 
-    if wechsel_config is not None:
+    # If wechsel_config is provided and tokenizer needs to be trained, do so before setting up adapters
+    if wechsel_config is not None and (path_to_tokenizer is None or not os.path.exists(path_to_tokenizer)):
         # Determine if using file or dataset
         train_corpus_path = wechsel_config.get('train_corpus_path')
         dataset = wechsel_config.get('dataset')
@@ -34,6 +39,10 @@ def setup_model(model_name='gpt2', adapter_type='none', adapter_config=None, num
             dataset=dataset,
             text_column=text_column
         )
+
+        if path_to_tokenizer is not None:
+            tokenizer.save_pretrained(path_to_tokenizer)
+            print(f"Tokenizer saved to {path_to_tokenizer}")
 
     for param in model.parameters(): 
         param.requires_grad = False

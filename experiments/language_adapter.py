@@ -93,7 +93,7 @@ class ChunkIterableDataset(IterableDataset):
                 while len(buffer) > self.context_size:
                     yield {
                         'input_ids': torch.tensor(buffer[:self.context_size]),
-                        'progress': self.tell,
+                        'progress': len(buffer[:self.context_size])  # Progress in bytes for file-based dataset,
                     }
                     buffer = buffer[self.context_size:]
                     self.tell = 0
@@ -101,7 +101,7 @@ class ChunkIterableDataset(IterableDataset):
         if buffer:
             yield {
                 'input_ids': torch.tensor(buffer),
-                'progress': self.tell
+                'progress': len(buffer)  # Final progress for remaining buffer
             }
 
     def _chunk_generator_dataset(self):
@@ -205,7 +205,7 @@ def train(model, train_dataloader, device, model_path, num_epochs=1):
         total_loss = 0
 
         # Use progress bar without total if length is unknown
-        progress_bar = tqdm(desc="Processing")
+        progress_bar = tqdm(total=dataloader_len, desc="Processing")
         batch_count = 0
 
         for i, (batch, progress) in enumerate(train_dataloader):
@@ -249,6 +249,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train a language model with adapters')
     parser.add_argument('model_name', type=str, help='Name or path of the base model (e.g., gpt2)')
     parser.add_argument('model_path', type=str, help='Path to save the model checkpoint')
+    parser.add_argument('path_to_tokenizer', type=str, default=None, help='Path to save/load the tokenizer (optional)')
     parser.add_argument('num_tailor_layers', type=int, help='Number of tailor layers to add')
     parser.add_argument('adapter_type', type=str, choices=['none', 'layer_adapter', 'lora'],
                         help='Type of adapter to use')
@@ -291,6 +292,7 @@ if __name__ == '__main__':
 
     model_name = args.model_name
     model_path = args.model_path
+    tokenizer_path = args.path_to_tokenizer
     num_tailor_layers = args.num_tailor_layers
     adapter_type = args.adapter_type
     chkpt = args.chkpt
@@ -360,9 +362,9 @@ if __name__ == '__main__':
 
             from datasets import load_dataset
             if args.dataset_config:
-                hf_dataset = load_dataset(args.dataset_name, args.dataset_config, split=args.dataset_split, streaming=False)
+                hf_dataset = load_dataset(args.dataset_name, args.dataset_config, split=args.dataset_split, streaming=True)
             else:
-                hf_dataset = load_dataset(args.dataset_name, split=args.dataset_split, streaming=False)
+                hf_dataset = load_dataset(args.dataset_name, split=args.dataset_split, streaming=True)
 
             # Apply language filter if specified
             if args.language_filter:
@@ -386,7 +388,7 @@ if __name__ == '__main__':
             wechsel_config['dataset'] = hf_dataset
             wechsel_config['text_column'] = args.text_column
 
-        model, tokenizer = setup_model(model_name, adapter_type, adapter_config, num_tailor_layers, wechsel_config)
+        model, tokenizer = setup_model(model_name, adapter_type, adapter_config, num_tailor_layers, wechsel_config, tokenizer_path)
 
     PADDING_VALUE = tokenizer.pad_token_id
 
