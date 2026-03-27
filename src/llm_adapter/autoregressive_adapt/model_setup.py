@@ -7,6 +7,17 @@ from wechsel import WECHSEL, load_embeddings
 import os
 import pdb
 
+
+def _truncate_text_to_utf8_bytes(text, max_bytes):
+    if max_bytes is None:
+        return text
+
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
 def setup_model(model_name='gpt2', adapter_type='none', adapter_config=None, num_tailor_layers=0, wechsel_config=None, path_to_tokenizer=None):
     
     if path_to_tokenizer is not None and os.path.exists(path_to_tokenizer):
@@ -28,6 +39,7 @@ def setup_model(model_name='gpt2', adapter_type='none', adapter_config=None, num
         train_corpus_path = wechsel_config.get('train_corpus_path')
         dataset = wechsel_config.get('dataset')
         text_column = wechsel_config.get('text_column', 'text')
+        max_train_size = wechsel_config.get('max_train_size')
 
         model, tokenizer = train_tokenizer(
             train_corpus_path=train_corpus_path,
@@ -37,7 +49,8 @@ def setup_model(model_name='gpt2', adapter_type='none', adapter_config=None, num
             target_language=wechsel_config['target_language'],
             dictionary=wechsel_config['dictionary'],
             dataset=dataset,
-            text_column=text_column
+            text_column=text_column,
+            max_train_size=max_train_size,
         )
 
         if path_to_tokenizer is not None:
@@ -106,7 +119,7 @@ def load_learnable_params(save_path):
     print(f"Parameters loaded from {save_path}")
     return model, tokenizer, adapter_config
 
-def train_tokenizer(train_corpus_path=None, source_tokenizer=None, model=None, source_language=None, target_language=None, dictionary=None, chunk_size=4*1024, dataset=None, text_column="text"):
+def train_tokenizer(train_corpus_path=None, source_tokenizer=None, model=None, source_language=None, target_language=None, dictionary=None, chunk_size=4*1024, dataset=None, text_column="text", max_train_size=None):
     """
     Train a new tokenizer using WECHSEL for language adaptation.
 
@@ -120,6 +133,8 @@ def train_tokenizer(train_corpus_path=None, source_tokenizer=None, model=None, s
         chunk_size: Chunk size for reading files
         dataset: HuggingFace dataset object (mutually exclusive with train_corpus_path)
         text_column: Column name in dataset containing text (default: "text")
+        max_train_size: Maximum number of UTF-8 bytes to consume when training
+            the tokenizer. If None, use the full available dataset.
 
     Returns:
         model, target_tokenizer: Updated model and trained tokenizer
@@ -131,16 +146,50 @@ def train_tokenizer(train_corpus_path=None, source_tokenizer=None, model=None, s
     if train_corpus_path is not None and dataset is not None:
         raise ValueError("Only one of train_corpus_path or dataset should be provided, not both")
 
+    if max_train_size is not None and max_train_size <= 0:
+        raise ValueError("max_train_size must be greater than 0 when provided")
+
     # Create batch iterator based on data source
     if train_corpus_path is not None:
         def batch_iterator():
+            bytes_used = 0
             with open(train_corpus_path, 'r', encoding='utf-8') as f:
                 for chunk in iter(lambda: f.read(chunk_size), ''):
+                    if max_train_size is not None:
+                        remaining_bytes = max_train_size - bytes_used
+                        if remaining_bytes <= 0:
+                            break
+
+                        chunk = _truncate_text_to_utf8_bytes(chunk, remaining_bytes)
+                        if not chunk:
+                            break
+
+                    chunk_bytes = len(chunk.encode('utf-8'))
+                    bytes_used += chunk_bytes
                     yield chunk
+
+                    if max_train_size is not None and bytes_used >= max_train_size:
+                        break
     else:
         def batch_iterator():
+            bytes_used = 0
             for sample in dataset:
-                yield sample[text_column]
+                text = sample[text_column]
+                if max_train_size is not None:
+                    remaining_bytes = max_train_size - bytes_used
+                    if remaining_bytes <= 0:
+                        break
+
+                    text = _truncate_text_to_utf8_bytes(text, remaining_bytes)
+                    if not text:
+                        break
+
+                text_bytes = len(text.encode('utf-8'))
+                bytes_used += text_bytes
+                yield text
+
+                if max_train_size is not None and bytes_used >= max_train_size:
+                    break
 
     target_tokenizer = source_tokenizer.train_new_from_iterator(
         batch_iterator(),
