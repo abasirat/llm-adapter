@@ -7,17 +7,6 @@ from wechsel import WECHSEL, load_embeddings
 import os
 import pdb
 
-
-def _truncate_text_to_utf8_bytes(text, max_bytes):
-    if max_bytes is None:
-        return text
-
-    encoded = text.encode("utf-8")
-    if len(encoded) <= max_bytes:
-        return text
-
-    return encoded[:max_bytes].decode("utf-8", errors="ignore")
-
 def setup_model(model_name='gpt2', adapter_type='none', adapter_config=None, num_tailor_layers=0, wechsel_config=None, path_to_tokenizer=None):
     
     if path_to_tokenizer is not None and os.path.exists(path_to_tokenizer):
@@ -160,10 +149,6 @@ def train_tokenizer(train_corpus_path=None, source_tokenizer=None, model=None, s
                         if remaining_bytes <= 0:
                             break
 
-                        chunk = _truncate_text_to_utf8_bytes(chunk, remaining_bytes)
-                        if not chunk:
-                            break
-
                     chunk_bytes = len(chunk.encode('utf-8'))
                     bytes_used += chunk_bytes
                     yield chunk
@@ -178,10 +163,6 @@ def train_tokenizer(train_corpus_path=None, source_tokenizer=None, model=None, s
                 if max_train_size is not None:
                     remaining_bytes = max_train_size - bytes_used
                     if remaining_bytes <= 0:
-                        break
-
-                    text = _truncate_text_to_utf8_bytes(text, remaining_bytes)
-                    if not text:
                         break
 
                 text_bytes = len(text.encode('utf-8'))

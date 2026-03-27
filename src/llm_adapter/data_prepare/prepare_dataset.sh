@@ -21,4 +21,5 @@ python $script --dataset_name $dataset_name \
     --wechsel_src_lang en \
     --wechsel_tgt_lang da \
     --wechsel_dictionary danish \
-    --save_tokenizer $tokenizer_save_path
+    --save_tokenizer $tokenizer_save_path \
+    --max_bin_size_gb .001
