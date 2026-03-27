@@ -447,6 +447,7 @@ def main():
             dictionary=args.wechsel_dictionary,
             dataset=dataset,
             text_column=args.text_column,
+            max_train_size=args.max_bin_size_gb * (1024 ** 3) // 2,  # Use up to half of the output cap for tokenizer training
         )
         del model  # embedding-transferred model not needed here
         logger.info("WECHSEL complete | adapted vocab size=%s", len(tokenizer))
