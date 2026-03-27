@@ -1,10 +1,12 @@
 import pdb
 
+import json
+import numpy as np
 import torch
 import os
 import sys
 import argparse
-from torch.utils.data import IterableDataset
+from torch.utils.data import Dataset, IterableDataset
 from torch.utils.data import DataLoader
 from torch.nn.utils.rnn import pad_sequence
 from torch.optim import Adam
@@ -134,11 +136,64 @@ class ChunkIterableDataset(IterableDataset):
             raise TypeError("object of type 'IterableDataset' has no len()")
         return self.corpus_size
 
+
+class TokenBinDataset(Dataset):
+    """
+    Read pre-tokenized token IDs from a binary file produced by
+    data/prepare_dataset.py and serve fixed-length context windows.
+
+    The matching .json metadata sidecar (same path, .json extension) is read
+    automatically to determine the correct dtype.  Falls back to uint16 when
+    the sidecar is absent.
+    """
+
+    def __init__(self, bin_path: str, context_size: int = 1024, max_tokens: int = None):
+        if not os.path.exists(bin_path):
+            raise FileNotFoundError(f"Token-bin file not found: {bin_path}")
+
+        meta_path = os.path.splitext(bin_path)[0] + ".json"
+        if os.path.exists(meta_path):
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            dtype = np.dtype(meta["dtype"])
+            print(f"TokenBinDataset: loaded metadata from {meta_path}")
+            print(f"  tokenizer : {meta.get('tokenizer_name', 'unknown')}")
+            print(f"  EOS token : {meta.get('eos_token', 'unknown')} (id={meta.get('eos_token_id', '?')})")
+        else:
+            dtype = np.uint16
+            print(f"TokenBinDataset: no metadata sidecar found, defaulting to uint16")
+
+        self.context_size = context_size
+
+        if max_tokens is not None:
+            self.data = np.memmap(bin_path, dtype=dtype, mode='r', shape=(max_tokens,))
+            print(f"TokenBinDataset: loading with max_tokens={max_tokens}")
+        else:
+            self.data = np.memmap(bin_path, dtype=dtype, mode='r')
+        
+        self.num_tokens = len(self.data)
+        self.num_chunks = int(np.ceil(self.num_tokens / context_size))
+
+        print(f"  total tokens : {self.num_tokens:,}")
+        print(f"  context size : {context_size}")
+        print(f"  chunks       : {self.num_chunks:,}")
+
+    def __len__(self):
+        return self.num_chunks
+
+    def __getitem__(self, idx):
+        start = idx * self.context_size
+        end = min(start + self.context_size, self.num_tokens)
+        chunk = self.data[start : end].astype(np.int64)
+        input_ids = torch.from_numpy(np.array(chunk))  # copy out of memmap
+        return {"input_ids": input_ids, "progress": 1}
+
+
 def collate(batch):
     input_ids = [x['input_ids'] for x in batch]
     input_ids = pad_sequence(input_ids, batch_first=True, padding_value=PADDING_VALUE)
     attention_mask = (input_ids != PADDING_VALUE)
-    progress = sum(b['progress'] for b in batch)
+    progress = None
     return {'input_ids':input_ids, 'attention_mask':attention_mask, 'labels':input_ids}, progress
 
 class WarmUpCosineDecayScheduler:
@@ -207,7 +262,6 @@ def train(model, train_dataloader, device, model_path, num_epochs=1):
         # Use progress bar without total if length is unknown
         progress_bar = tqdm(total=dataloader_len, desc="Processing")
         batch_count = 0
-
         for i, (batch, progress) in enumerate(train_dataloader):
             batch = {k:v.to(device) for k,v in batch.items()}
 
@@ -247,20 +301,23 @@ def train(model, train_dataloader, device, model_path, num_epochs=1):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train a language model with adapters')
-    parser.add_argument('model_name', type=str, help='Name or path of the base model (e.g., gpt2)')
-    parser.add_argument('model_path', type=str, help='Path to save the model checkpoint')
-    parser.add_argument('path_to_tokenizer', type=str, default=None, help='Path to save/load the tokenizer (optional)')
-    parser.add_argument('num_tailor_layers', type=int, help='Number of tailor layers to add')
-    parser.add_argument('adapter_type', type=str, choices=['none', 'layer_adapter', 'lora'],
+    parser.add_argument('--model_name', type=str, required=True, help='Name or path of the base model (e.g., gpt2)')
+    parser.add_argument('--model_path', type=str, required=True, help='Path to save the model checkpoint')
+    parser.add_argument('--tokenizer_path', type=str, default=None, help='Path to save/load the tokenizer (optional)')
+    parser.add_argument('--num_tailor_layers', type=int, required=True, help='Number of tailor layers to add')
+    parser.add_argument('--adapter_type', type=str, required=True, choices=['none', 'layer_adapter', 'lora'],
                         help='Type of adapter to use')
-    parser.add_argument('chkpt', type=str, nargs='?', default='',
+    parser.add_argument('--chkpt', type=str, default='',
                         help='Path to checkpoint to resume from (optional)')
-    parser.add_argument('num_epochs', type=int, help='Number of training epochs')
-    parser.add_argument('project_name', type=str, help='Weights & Biases project name')
-    parser.add_argument('experiment_description', type=str, help='Experiment description for W&B')
-    parser.add_argument('src_language', type=str, help='Source language code')
-    parser.add_argument('tgt_language', type=str, help='Target language code')
-    parser.add_argument('wechsel_dictionary', type=str, help='Path to WECHSEL dictionary')
+    parser.add_argument('--num_epochs', type=int, required=True, help='Number of training epochs')
+    parser.add_argument('--proj_name', type=str, required=True, help='Weights & Biases project name')
+    parser.add_argument('--experiment_description', type=str, required=True, help='Experiment description for W&B')
+
+    # WECHSEL parameters – only required when tokenizer training is needed
+    # (i.e. not using --token_bin and not resuming from --chkpt)
+    parser.add_argument('--src_language', type=str, default=None, help='Source language code for WECHSEL')
+    parser.add_argument('--tgt_language', type=str, default=None, help='Target language code for WECHSEL')
+    parser.add_argument('--wechsel_dictionary', type=str, default=None, help='Bilingual dictionary name or path for WECHSEL')
 
     # Data source options
     parser.add_argument('--train_data', type=str, default=None,
@@ -275,6 +332,9 @@ if __name__ == '__main__':
                         help='Column name containing text in dataset (default: text)')
     parser.add_argument('--language_filter', type=str, default=None,
                         help='Language code to filter samples (e.g., "da" for Danish; requires language column)')
+    parser.add_argument('--token_bin', type=str, default=None,
+                        help='Path to a pre-tokenized .bin file produced by data/prepare_dataset.py '
+                             '(use this OR --train_data / --dataset_name, not in combination)')
 
     # Optional parameters
     parser.add_argument('--chunk_size', type=int, default=4*1024, help='Chunk size for data loading (default: 4096)')
@@ -285,19 +345,32 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # Validate data source
-    if args.train_data is None and args.dataset_name is None:
-        parser.error("Either --train_data or --dataset_name must be provided")
-    if args.train_data is not None and args.dataset_name is not None:
-        parser.error("Only one of --train_data or --dataset_name should be provided, not both")
+    sources_provided = sum(x is not None for x in [args.train_data, args.dataset_name, args.token_bin])
+    if sources_provided == 0:
+        parser.error("One of --train_data, --dataset_name, or --token_bin must be provided")
+    if sources_provided > 1:
+        parser.error("Only one of --train_data, --dataset_name, or --token_bin should be provided, not multiple")
+
+    # WECHSEL args are only needed when the tokenizer must be trained
+    # (no pre-tokenized binary and not resuming from a checkpoint)
+    wechsel_needed = not args.chkpt and args.token_bin is None
+    if wechsel_needed:
+        missing = [flag for flag, val in [
+            ('--src_language',      args.src_language),
+            ('--tgt_language',      args.tgt_language),
+            ('--wechsel_dictionary', args.wechsel_dictionary),
+        ] if not val]
+        if missing:
+            parser.error(f"WECHSEL tokenizer training requires: {', '.join(missing)}")
 
     model_name = args.model_name
     model_path = args.model_path
-    tokenizer_path = args.path_to_tokenizer
+    tokenizer_path = args.tokenizer_path
     num_tailor_layers = args.num_tailor_layers
     adapter_type = args.adapter_type
     chkpt = args.chkpt
     num_epochs = args.num_epochs
-    project_name = args.project_name
+    project_name = args.proj_name
     experiment_description = args.experiment_description
     src_language = args.src_language
     tgt_language = args.tgt_language
@@ -352,6 +425,9 @@ if __name__ == '__main__':
         if args.train_data is not None:
             print(f"Preparing data from file: {args.train_data}")
             hf_dataset = None
+        elif args.token_bin is not None:
+            print(f"Using pre-tokenized binary: {args.token_bin}")
+            hf_dataset = None
         else:
             print(f"Loading dataset: {args.dataset_name}")
             if args.dataset_config:
@@ -377,23 +453,34 @@ if __name__ == '__main__':
             
             #hf_dataset = hf_dataset.take(100_000)
 
-        # Prepare wechsel_config with dataset if available
-        wechsel_config = {
-            'train_corpus_path': args.train_data,
-            'source_language': src_language,
-            'target_language': tgt_language,
-            'dictionary': wechsel_dictionary
-        }
-        if hf_dataset is not None:
-            wechsel_config['dataset'] = hf_dataset
-            wechsel_config['text_column'] = args.text_column
+        # Prepare wechsel_config with dataset if available.
+        # Pre-tokenized binary data already has the tokenizer baked in, so
+        # WECHSEL language adaptation is skipped in that case.
+        if args.token_bin is not None:
+            wechsel_config = None
+        else:
+            wechsel_config = {
+                'train_corpus_path': args.train_data,
+                'source_language': src_language,
+                'target_language': tgt_language,
+                'dictionary': wechsel_dictionary
+            }
+            if hf_dataset is not None:
+                wechsel_config['dataset'] = hf_dataset
+                wechsel_config['text_column'] = args.text_column
 
         model, tokenizer = setup_model(model_name, adapter_type, adapter_config, num_tailor_layers, wechsel_config, tokenizer_path)
 
     PADDING_VALUE = tokenizer.pad_token_id
 
     # Create training dataset
-    if args.train_data is not None:
+    if args.token_bin is not None:
+        print(f"Creating training dataset from pre-tokenized binary: {args.token_bin}")
+        train_dataset = TokenBinDataset(
+            bin_path=args.token_bin,
+            context_size=context_size,
+        )
+    elif args.train_data is not None:
         print(f"Creating training dataset from file: {args.train_data}")
         train_dataset = ChunkIterableDataset(
             corpus_path=args.train_data,

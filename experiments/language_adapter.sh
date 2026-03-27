@@ -17,14 +17,23 @@ llm=gpt2
 adapter_type=layer_adapter # layer_adapter, none, or lora
 
 # Option 1: Train from file
+<<<<<<< HEAD
 train_data=dr_articles.txt
 model_name=${llm}_$(basename $train_data .txt)_${adapter_type}.pt
 tokenizer_name=${llm}_$(basename $train_data .txt)_tokenizer
+=======
+train_token_bin=gpt2_wechsel_wikimedia-wikipedia_en-da_tokenized_train.bin
+model_name=${llm}_wikimedia-wikipedia_en-da_${adapter_type}.pt
+tokenizer_name=gpt2_wechsel_wikimedia-wikipedia_en-da_tokenizer
+>>>>>>> 9f79c03 (enable pre-tokenization. fix the issue with the tqdm progress when using pre-tokenized binary training data.  wechsel is integrated to the pre-tokenization)
 
-path_to_train_data=${data_prefix}/${train_data}
+path_to_train_data=${data_prefix}/${train_token_bin}
 path_to_model=${model_prefix}/${model_name}
 path_to_tokenizer=${model_prefix}/${tokenizer_name}
+<<<<<<< HEAD
 
+=======
+>>>>>>> 9f79c03 (enable pre-tokenization. fix the issue with the tqdm progress when using pre-tokenized binary training data.  wechsel is integrated to the pre-tokenization)
 num_tailor_layers=0
 num_epochs=1
 chkpt=""
@@ -32,20 +41,16 @@ chkpt=""
 proj_name="language_adapt"
 
 # extract the first five letters
-first_five=${train_data:0:5}
+first_five=${train_token_bin:0:5}
 experiment_description=${llm}_${first_five}-${adapter_type}
 
-# wechsel parameters
-src_lang="en"
-tgt_lang="da"
-dictionary="danish"
-
-chunk_size=$((1 * 1024))
+chunk_size=$((1024 * 1024))
 batch_size=4
 
 script=language_adapter.py
 
 # Train with file-based data source
+<<<<<<< HEAD
 #python $script \
 #    $llm \
 #    $path_to_model \
@@ -107,3 +112,18 @@ python $script \
 #     --batch_size $batch_size
 
 conda deactivate
+=======
+python $script \
+    --model_name $llm \
+    --model_path $path_to_model \
+    --tokenizer_path $path_to_tokenizer \
+    --num_tailor_layers $num_tailor_layers \
+    --adapter_type $adapter_type \
+    --num_epochs 1 \
+    --proj_name $proj_name \
+    --experiment_description $experiment_description \
+    --token_bin $path_to_train_data \
+    --batch_size $batch_size
+ 
+ conda deactivate
+>>>>>>> 9f79c03 (enable pre-tokenization. fix the issue with the tqdm progress when using pre-tokenized binary training data.  wechsel is integrated to the pre-tokenization)
