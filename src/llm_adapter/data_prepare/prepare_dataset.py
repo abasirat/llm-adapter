@@ -21,6 +21,7 @@ python data/prepare_dataset.py \
     --dataset_config 20220301.en \
     --split train \
     --tokenizer_name gpt2 \
+    --max_bin_size_gb 5 \
     --output_prefix data/wikipedia
 
 # Local text file (one document per line)
@@ -69,6 +70,33 @@ def _flush_buffer(buf: list, out_file, dtype):
     arr.tofile(out_file)
 
 
+def _fit_document_to_budget(ids, eos_id, tokens_written, max_tokens):
+    """
+    Fit a tokenized document into the remaining token budget.
+
+    Returns:
+        fitted_ids, limit_reached, was_truncated
+    """
+    if max_tokens is None:
+        return ids, False, False
+
+    remaining_tokens = max_tokens - tokens_written
+    if remaining_tokens <= 0:
+        return [], True, False
+
+    if len(ids) <= remaining_tokens:
+        return ids, False, False
+
+    if tokens_written > 0:
+        return [], True, False
+
+    if remaining_tokens == 1:
+        return [eos_id], True, True
+
+    trimmed_ids = ids[: remaining_tokens - 1] + [eos_id]
+    return trimmed_ids, True, True
+
+
 def tokenize_hf_dataset(
     dataset,
     tokenizer,
@@ -76,13 +104,13 @@ def tokenize_hf_dataset(
     output_path: str,
     dtype,
     chunk_size: int = 4096,
-    num_proc: int = 1,
+    max_tokens: int = None,
 ):
     """
     Iterate over a HuggingFace dataset, tokenize each document, append EOS,
     and write token IDs to *output_path* as a flat binary array.
 
-    Returns the total number of tokens written.
+    Returns the total number of tokens written and whether the output was capped.
     """
     eos_id = tokenizer.eos_token_id
     if eos_id is None:
@@ -93,6 +121,8 @@ def tokenize_hf_dataset(
 
     total_tokens = 0
     write_buffer = []
+    limit_reached = False
+    was_truncated = False
 
     with open(output_path, "wb") as out_file:
         for sample in tqdm(dataset, desc="Tokenizing", unit="doc"):
@@ -107,6 +137,16 @@ def tokenize_hf_dataset(
             ).input_ids
             ids.append(eos_id)  # document boundary marker
 
+            ids, limit_reached, doc_truncated = _fit_document_to_budget(
+                ids,
+                eos_id,
+                total_tokens,
+                max_tokens,
+            )
+            was_truncated = was_truncated or doc_truncated
+            if limit_reached and not ids:
+                break
+
             write_buffer.extend(ids)
             total_tokens += len(ids)
 
@@ -115,10 +155,13 @@ def tokenize_hf_dataset(
                 _flush_buffer(write_buffer, out_file, dtype)
                 write_buffer = []
 
+            if limit_reached:
+                break
+
         if write_buffer:
             _flush_buffer(write_buffer, out_file, dtype)
 
-    return total_tokens
+    return total_tokens, limit_reached or was_truncated
 
 
 def tokenize_text_file(
@@ -127,12 +170,13 @@ def tokenize_text_file(
     output_path: str,
     dtype,
     chunk_size: int = 4096,
+    max_tokens: int = None,
 ):
     """
     Read a plain-text file where each non-empty line is treated as a separate
     document.  Tokenize, append EOS, and write to *output_path*.
 
-    Returns the total number of tokens written.
+    Returns the total number of tokens written and whether the output was capped.
     """
     eos_id = tokenizer.eos_token_id
     if eos_id is None:
@@ -143,6 +187,8 @@ def tokenize_text_file(
 
     total_tokens = 0
     write_buffer = []
+    limit_reached = False
+    was_truncated = False
 
     with open(input_path, "r", encoding="utf-8") as in_file, \
          open(output_path, "wb") as out_file:
@@ -159,6 +205,16 @@ def tokenize_text_file(
             ).input_ids
             ids.append(eos_id)
 
+            ids, limit_reached, doc_truncated = _fit_document_to_budget(
+                ids,
+                eos_id,
+                total_tokens,
+                max_tokens,
+            )
+            was_truncated = was_truncated or doc_truncated
+            if limit_reached and not ids:
+                break
+
             write_buffer.extend(ids)
             total_tokens += len(ids)
 
@@ -166,10 +222,13 @@ def tokenize_text_file(
                 _flush_buffer(write_buffer, out_file, dtype)
                 write_buffer = []
 
+            if limit_reached:
+                break
+
         if write_buffer:
             _flush_buffer(write_buffer, out_file, dtype)
 
-    return total_tokens
+    return total_tokens, limit_reached or was_truncated
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +309,12 @@ def main():
         default=4096,
         help="Tokenization chunk size (default: 4096).",
     )
+    parser.add_argument(
+        "--max_bin_size_gb",
+        type=float,
+        default=5.0,
+        help="Maximum size of the output .bin file in GB (default: 5).",
+    )
 
     # ── WECHSEL tokenizer adaptation (optional) ─────────────────────────────
     parser.add_argument(
@@ -294,6 +359,8 @@ def main():
                                    ("--model_name", args.model_name)] if not v]
         if missing:
             parser.error(f"--wechsel_src_lang requires: {', '.join(missing)}")
+    if args.max_bin_size_gb <= 0:
+        parser.error("--max_bin_size_gb must be greater than 0")
 
     # ── Load tokenizer ──────────────────────────────────────────────────────
     print(f"Loading tokenizer: {args.tokenizer_name}")
@@ -366,6 +433,13 @@ def main():
     # ── dtype (computed after potential vocab change from WECHSEL) ──────────
     dtype = _dtype_for_vocab(tokenizer.vocab_size)
     print(f"  storage dtype: {dtype.__name__}")
+    dtype_bytes = np.dtype(dtype).itemsize
+    max_bin_size_bytes = int(args.max_bin_size_gb * (1024 ** 3))
+    max_tokens = max_bin_size_bytes // dtype_bytes
+    print(f"  max bin size : {args.max_bin_size_gb:.2f} GB ({max_bin_size_bytes:,} bytes)")
+
+    if max_tokens <= 0:
+        parser.error("--max_bin_size_gb is too small for the selected token dtype")
 
     # ── Determine output paths ──────────────────────────────────────────────
     if args.dataset_name:
@@ -383,13 +457,14 @@ def main():
     # each __iter__() call on an IterableDataset creates a fresh stream.
     if args.dataset_name:
         print(f"\nWriting tokenized data to: {bin_path}")
-        total_tokens = tokenize_hf_dataset(
+        total_tokens, output_capped = tokenize_hf_dataset(
             dataset,
             tokenizer,
             text_column=args.text_column,
             output_path=bin_path,
             dtype=dtype,
             chunk_size=args.chunk_size,
+            max_tokens=max_tokens,
         )
 
     else:
@@ -398,12 +473,13 @@ def main():
 
         print(f"\nReading from local file: {args.input_file}")
         print(f"Writing tokenized data to: {bin_path}")
-        total_tokens = tokenize_text_file(
+        total_tokens, output_capped = tokenize_text_file(
             args.input_file,
             tokenizer,
             output_path=bin_path,
             dtype=dtype,
             chunk_size=args.chunk_size,
+            max_tokens=max_tokens,
         )
 
     # ── Write metadata ──────────────────────────────────────────────────────
@@ -416,6 +492,9 @@ def main():
         "dtype": dtype.__name__,
         "total_tokens": total_tokens,
         "file_size_mb": round(file_size_mb, 2),
+        "max_bin_size_gb": args.max_bin_size_gb,
+        "max_bin_size_bytes": max_bin_size_bytes,
+        "output_capped": output_capped,
         "source": args.dataset_name or args.input_file,
         "split": split_tag,
         "wechsel": {
@@ -439,6 +518,8 @@ def main():
     print(f"  File size    : {file_size_mb:.1f} MB")
     print(f"  Binary file  : {bin_path}")
     print(f"  Metadata     : {meta_path}")
+    if output_capped:
+        print("  Output cap   : reached configured maximum binary size")
     if args.save_tokenizer:
         print(f"  Tokenizer    : {args.save_tokenizer}")
     print(
