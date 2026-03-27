@@ -46,6 +46,7 @@ python data/prepare_dataset.py \
 
 import argparse
 import json
+import logging
 import os
 import sys
 import numpy as np
@@ -56,6 +57,17 @@ from transformers import AutoTokenizer
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+logger = logging.getLogger(__name__)
+
+
+def setup_logging():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
 def _dtype_for_vocab(vocab_size: int):
     """Choose the most compact integer dtype that can represent all token IDs."""
@@ -124,6 +136,8 @@ def tokenize_hf_dataset(
     limit_reached = False
     was_truncated = False
 
+    logger.info("Stage: tokenizing HuggingFace dataset into %s", output_path)
+
     with open(output_path, "wb") as out_file:
         for sample in tqdm(dataset, desc="Tokenizing", unit="doc"):
             text = sample[text_column]
@@ -161,6 +175,9 @@ def tokenize_hf_dataset(
         if write_buffer:
             _flush_buffer(write_buffer, out_file, dtype)
 
+    if limit_reached or was_truncated:
+        logger.info("Stage: output size cap reached while tokenizing dataset")
+
     return total_tokens, limit_reached or was_truncated
 
 
@@ -189,6 +206,8 @@ def tokenize_text_file(
     write_buffer = []
     limit_reached = False
     was_truncated = False
+
+    logger.info("Stage: tokenizing local text file %s into %s", input_path, output_path)
 
     with open(input_path, "r", encoding="utf-8") as in_file, \
          open(output_path, "wb") as out_file:
@@ -228,6 +247,9 @@ def tokenize_text_file(
         if write_buffer:
             _flush_buffer(write_buffer, out_file, dtype)
 
+    if limit_reached or was_truncated:
+        logger.info("Stage: output size cap reached while tokenizing local file")
+
     return total_tokens, limit_reached or was_truncated
 
 
@@ -236,6 +258,8 @@ def tokenize_text_file(
 # ---------------------------------------------------------------------------
 
 def main():
+    setup_logging()
+
     parser = argparse.ArgumentParser(
         description="Tokenize a dataset and save as a binary token-ID file."
     )
@@ -363,24 +387,26 @@ def main():
         parser.error("--max_bin_size_gb must be greater than 0")
 
     # ── Load tokenizer ──────────────────────────────────────────────────────
-    print(f"Loading tokenizer: {args.tokenizer_name}")
+    logger.info("Stage: loading tokenizer %s", args.tokenizer_name)
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name)
     if tokenizer.eos_token is None:
         # Fall back to a common sentinel if EOS is not defined
         tokenizer.add_special_tokens({"eos_token": "<|endoftext|>"})
-        print("Warning: tokenizer had no EOS token; added '<|endoftext|>'.")
-    print(f"  vocab size : {tokenizer.vocab_size}")
-    print(f"  EOS token  : '{tokenizer.eos_token}'  (id={tokenizer.eos_token_id})")
+        logger.warning("Tokenizer had no EOS token; added '<|endoftext|>'.")
+    logger.info("Tokenizer ready | vocab size=%s | eos=%r | eos_id=%s", tokenizer.vocab_size, tokenizer.eos_token, tokenizer.eos_token_id)
 
     # ── Load HF dataset early (reused for WECHSEL and tokenization) ─────────
     dataset = None
     if args.dataset_name:
         from datasets import load_dataset
 
-        print(f"\nLoading dataset '{args.dataset_name}'"
-              + (f" ({args.dataset_config})" if args.dataset_config else "")
-              + f" – split '{args.split}'"
-              + (" [streaming]" if args.streaming else ""))
+        logger.info(
+            "Stage: loading dataset %s%s | split=%s%s",
+            args.dataset_name,
+            f" ({args.dataset_config})" if args.dataset_config else "",
+            args.split,
+            " | streaming" if args.streaming else "",
+        )
 
         load_kwargs = dict(split=args.split, streaming=args.streaming)
         if args.dataset_config:
@@ -391,7 +417,7 @@ def main():
         if args.max_samples is not None:
             dataset = dataset.take(args.max_samples) if args.streaming \
                       else dataset.select(range(min(args.max_samples, len(dataset))))
-            print(f"  Capped at {args.max_samples} samples.")
+            logger.info("Dataset sample cap applied | max_samples=%s", args.max_samples)
 
     # ── Optional WECHSEL tokenizer adaptation ──────────────────────────────
     # Trains a new target-language tokenizer from the corpus via
@@ -403,11 +429,13 @@ def main():
         from transformers import AutoModelForCausalLM
         from llm_adapter import train_tokenizer
 
-        print(f"\nApplying WECHSEL tokenizer adaptation")
-        print(f"  source language : {args.wechsel_src_lang}")
-        print(f"  target language : {args.wechsel_tgt_lang}")
-        print(f"  dictionary      : {args.wechsel_dictionary}")
-        print(f"  model           : {args.model_name}")
+        logger.info(
+            "Stage: applying WECHSEL | src=%s | tgt=%s | dictionary=%s | model=%s",
+            args.wechsel_src_lang,
+            args.wechsel_tgt_lang,
+            args.wechsel_dictionary,
+            args.model_name,
+        )
 
         model = AutoModelForCausalLM.from_pretrained(args.model_name)
         _, tokenizer = train_tokenizer(
@@ -421,22 +449,22 @@ def main():
             text_column=args.text_column,
         )
         del model  # embedding-transferred model not needed here
-        print(f"  WECHSEL done. Adapted vocab size: {len(tokenizer)}")
+        logger.info("WECHSEL complete | adapted vocab size=%s", len(tokenizer))
         wechsel_applied = True
 
     # ── Save tokenizer (if requested) ───────────────────────────────────────
     if args.save_tokenizer:
         os.makedirs(args.save_tokenizer, exist_ok=True)
         tokenizer.save_pretrained(args.save_tokenizer)
-        print(f"  Tokenizer saved to: {args.save_tokenizer}")
+        logger.info("Tokenizer saved to %s", args.save_tokenizer)
 
     # ── dtype (computed after potential vocab change from WECHSEL) ──────────
     dtype = _dtype_for_vocab(tokenizer.vocab_size)
-    print(f"  storage dtype: {dtype.__name__}")
+    logger.info("Storage dtype selected | dtype=%s", dtype.__name__)
     dtype_bytes = np.dtype(dtype).itemsize
     max_bin_size_bytes = int(args.max_bin_size_gb * (1024 ** 3))
     max_tokens = max_bin_size_bytes // dtype_bytes
-    print(f"  max bin size : {args.max_bin_size_gb:.2f} GB ({max_bin_size_bytes:,} bytes)")
+    logger.info("Output size cap configured | size_gb=%.2f | size_bytes=%s", args.max_bin_size_gb, f"{max_bin_size_bytes:,}")
 
     if max_tokens <= 0:
         parser.error("--max_bin_size_gb is too small for the selected token dtype")
@@ -456,7 +484,6 @@ def main():
     # For streaming HF datasets, iterating again after WECHSEL is fine –
     # each __iter__() call on an IterableDataset creates a fresh stream.
     if args.dataset_name:
-        print(f"\nWriting tokenized data to: {bin_path}")
         total_tokens, output_capped = tokenize_hf_dataset(
             dataset,
             tokenizer,
@@ -471,8 +498,6 @@ def main():
         if not os.path.exists(args.input_file):
             sys.exit(f"Error: input file not found: {args.input_file}")
 
-        print(f"\nReading from local file: {args.input_file}")
-        print(f"Writing tokenized data to: {bin_path}")
         total_tokens, output_capped = tokenize_text_file(
             args.input_file,
             tokenizer,
@@ -513,19 +538,17 @@ def main():
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2)
 
-    print(f"\nDone.")
-    print(f"  Total tokens : {total_tokens:,}")
-    print(f"  File size    : {file_size_mb:.1f} MB")
-    print(f"  Binary file  : {bin_path}")
-    print(f"  Metadata     : {meta_path}")
+    logger.info("Stage: completed dataset preparation")
+    logger.info("Run summary | total_tokens=%s | file_size_mb=%.1f", f"{total_tokens:,}", file_size_mb)
+    logger.info("Artifacts | binary=%s | metadata=%s", bin_path, meta_path)
     if output_capped:
-        print("  Output cap   : reached configured maximum binary size")
+        logger.info("Output cap reached configured maximum binary size")
     if args.save_tokenizer:
-        print(f"  Tokenizer    : {args.save_tokenizer}")
-    print(
-        f"\nTo load during training:\n"
-        f"  import numpy as np\n"
-        f"  data = np.memmap('{bin_path}', dtype='{dtype.__name__}', mode='r')"
+        logger.info("Artifacts | tokenizer=%s", args.save_tokenizer)
+    logger.info(
+        "Load hint | np.memmap('%s', dtype='%s', mode='r')",
+        bin_path,
+        dtype.__name__,
     )
 
 
