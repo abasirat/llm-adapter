@@ -409,8 +409,8 @@ if __name__ == '__main__':
             adapter_config = None
         elif adapter_type == 'layer_adapter':
             adapter_config = {
-                'hidden_size': 32,
-                'num_heads': 8,
+                'hidden_size': 768,
+                'num_heads': 12,
             }
         elif adapter_type == 'lora':
             adapter_config = LoraConfig(
