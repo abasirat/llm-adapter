@@ -11,6 +11,7 @@ setup(
     install_requires=[
         "torch",
         "transformers",
+        "bitsandbytes>=0.46.1",
         "peft",
         "wechsel",
         "tqdm",
