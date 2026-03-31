@@ -17,6 +17,10 @@ class LanguageAdapter(torch.nn.Module):
         self.tailor_blocks = torch.nn.ModuleList(
             [GPT2Block(encoder.config, layer_idx=i) for i in range(num_tailor_layers)]
         )
+
+        device = next(self.parameters()).device
+        ctx_len = encoder.config.n_positions
+        self.causal_mask = torch.triu(torch.ones(ctx_len, ctx_len, device=device), diagonal=1).bool()
         
         #self.print_trainable_parameters()
 
@@ -39,7 +43,8 @@ class LanguageAdapter(torch.nn.Module):
     
     def tailor(self, hidden_states):
         seq_len = hidden_states.size()[1]
-        causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=hidden_states.device), diagonal=1).bool()
+        #causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=hidden_states.device), diagonal=1).bool()
+        causal_mask = self.causal_mask[:seq_len, :seq_len]
 
         for block in self.tailor_blocks:
             hidden_states = block(hidden_states, attention_mask=causal_mask)[0]
