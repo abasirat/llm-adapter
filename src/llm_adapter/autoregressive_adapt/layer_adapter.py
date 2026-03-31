@@ -17,6 +17,8 @@ class LayerAdapter(torch.nn.Module):
         self.encoder = encoder
         self.config = encoder.config
 
+        self.encoder.eval() # Set encoder to evaluation mode to disable dropout and other training-specific layers. It will speed up inference and reduce memory usage. We will enable grad only for the adapters and lm_head.
+
         self.quey_projection_layer = None
         self.key_projection_layer = None
 
@@ -91,18 +93,19 @@ class LayerAdapter(torch.nn.Module):
         cache_position: Optional[torch.LongTensor] = None,
         )-> Union[Tuple[torch.Tensor], BaseModelOutputWithPoolingAndCrossAttentions]:
 
-        encoder_outputs =  self.encoder(
-                input_ids,
-                attention_mask=attention_mask,
-                token_type_ids=token_type_ids,
-                position_ids=position_ids,
-                head_mask=head_mask,
-                inputs_embeds=inputs_embeds,
-                output_attentions=output_attentions,
-                output_hidden_states=True,
-                return_dict=return_dict,
-                cache_position=cache_position,
-        )
+        with torch.no_grad():
+            encoder_outputs =  self.encoder(
+                    input_ids,
+                    attention_mask=attention_mask,
+                    token_type_ids=token_type_ids,
+                    position_ids=position_ids,
+                    head_mask=head_mask,
+                    inputs_embeds=inputs_embeds,
+                    output_attentions=output_attentions,
+                    output_hidden_states=True,
+                    return_dict=return_dict,
+                    cache_position=cache_position,
+            )
 
         key_padding_mask = torch.logical_not(attention_mask)
         hs = torch.stack(encoder_outputs.hidden_states, -1)
@@ -135,22 +138,23 @@ class LayerAdapter(torch.nn.Module):
         cache_position: Optional[torch.LongTensor] = None,
     ) -> Union[Tuple, BaseModelOutputWithPastAndCrossAttentions]:
         
-        encoder_outputs =  self.encoder(
-                input_ids,
-                past_key_values=past_key_values,
-                attention_mask=attention_mask,
-                token_type_ids=token_type_ids,
-                position_ids=position_ids,
-                head_mask=head_mask,
-                inputs_embeds=inputs_embeds,
-                encoder_hidden_states=encoder_hidden_states,
-                encoder_attention_mask=encoder_attention_mask,
-                use_cache=use_cache,
-                output_attentions=output_attentions,
-                output_hidden_states=True,
-                return_dict=return_dict,
-                cache_position=cache_position,
-        )
+        with torch.no_grad():
+            encoder_outputs =  self.encoder(
+                    input_ids,
+                    past_key_values=past_key_values,
+                    attention_mask=attention_mask,
+                    token_type_ids=token_type_ids,
+                    position_ids=position_ids,
+                    head_mask=head_mask,
+                    inputs_embeds=inputs_embeds,
+                    encoder_hidden_states=encoder_hidden_states,
+                    encoder_attention_mask=encoder_attention_mask,
+                    use_cache=use_cache,
+                    output_attentions=output_attentions,
+                    output_hidden_states=True,
+                    return_dict=return_dict,
+                    cache_position=cache_position,
+            )
 
         # do not pad for new generated input if only decoder
         if self.encoder.config.is_encoder_decoder is False:

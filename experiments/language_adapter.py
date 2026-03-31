@@ -187,7 +187,12 @@ class TokenBinDataset(Dataset):
         chunk = self.data[start : end].astype(np.int64)
         input_ids = torch.from_numpy(np.array(chunk))  # copy out of memmap
         return {"input_ids": input_ids, "progress": 1}
-
+    
+    def collate(self, batch):
+        input_ids = torch.stack([x['input_ids'] for x in batch])
+        attention_mask = torch.ones_like(input_ids, dtype=torch.long)
+        progress = None
+        return {'input_ids':input_ids, 'attention_mask':attention_mask, 'labels':input_ids}, progress
 
 def collate(batch):
     input_ids = [x['input_ids'] for x in batch]
@@ -233,7 +238,7 @@ class WarmUpCosineDecayScheduler:
         return self.optimizer.param_groups[0]['lr']
 
 def train(model, train_dataloader, device, model_path, num_epochs=1):
-    optimizer = Adam(model.parameters(), lr=learning_rate)
+    optimizer = Adam((p for p in model.parameters() if p.requires_grad), lr=learning_rate)
 
     # Try to get dataloader length, default to None if not available
     try:
@@ -253,6 +258,14 @@ def train(model, train_dataloader, device, model_path, num_epochs=1):
         scheduler = None
         print("LR scheduler disabled (unknown dataloader length)")
 
+    # Check AMP support
+    device_type = device.type
+    use_amp = torch.amp.autocast_mode.is_autocast_available(device_type)
+
+    # GradScaler only for CUDA
+    use_scaler = device_type == "cuda"
+    scaler = torch.amp.GradScaler("cuda", enabled=use_scaler)
+
     model.to(device)
 
     for epoch in range(num_epochs):
@@ -265,17 +278,24 @@ def train(model, train_dataloader, device, model_path, num_epochs=1):
         for i, (batch, progress) in enumerate(train_dataloader):
             batch = {k:v.to(device) for k,v in batch.items()}
 
-            outputs = model(**batch)
+            optimizer.zero_grad(set_to_none=True)
 
-            loss = outputs.loss
-            total_loss += loss.item()
+            with torch.autocast(device_type=device_type, dtype=torch.float16, enabled=use_amp):
+                outputs = model(**batch)
+                loss = outputs.loss
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            if use_scaler:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
 
             if scheduler is not None:
                 scheduler.step(progress)
+            
+            total_loss += loss.detach().float().item()
 
             progress_bar.update(progress if progress else 1)
             progress_bar.set_description(f"running loss: {total_loss/(i+1):.4f}, batch loss: {loss.item():.4f}" +
@@ -480,6 +500,7 @@ if __name__ == '__main__':
             bin_path=args.token_bin,
             context_size=context_size,
         )
+        collate_fn = train_dataset.collate
     elif args.train_data is not None:
         print(f"Creating training dataset from file: {args.train_data}")
         train_dataset = ChunkIterableDataset(
@@ -488,6 +509,7 @@ if __name__ == '__main__':
             context_size=context_size,
             chunk_size=chunk_size
         )
+        collate_fn = collate
     else:
         print(f"Creating training dataset from HuggingFace dataset")
         # Dataset was already loaded above, reuse it
@@ -498,8 +520,9 @@ if __name__ == '__main__':
             chunk_size=chunk_size,
             text_column=args.text_column
         )
+        collate_fn = collate
 
-    train_dataloader = DataLoader(train_dataset, batch_size, collate_fn=collate)
+    train_dataloader = DataLoader(train_dataset, batch_size, collate_fn=collate_fn, num_workers=0)
 
     model = train(model, train_dataloader, device, model_path, num_epochs)
 
