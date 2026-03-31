@@ -1,6 +1,6 @@
 import torch
 from .layer_adapter import LayerAdapter
-from transformers import AutoTokenizer, GPT2LMHeadModel
+from transformers import AutoTokenizer, GPT2LMHeadModel, BitsAndBytesConfig
 from .language_tailor import LanguageAdapter
 from peft import get_peft_model
 from wechsel import WECHSEL, load_embeddings
@@ -17,10 +17,25 @@ def setup_model(model_name='gpt2', adapter_type='none', adapter_config=None, num
     if tokenizer.pad_token is None:  # If the tokenizer doesn't have a pad_token
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = GPT2LMHeadModel.from_pretrained(
-        model_name,
-        device_map='auto',  
-    )
+    # INT8 quantization with bitsandbytes (CUDA only, MPS will fall back to full precision)
+    if torch.cuda.is_available():
+        quantization_config = BitsAndBytesConfig(
+            load_in_8bit=True,
+            bnb_8bit_compute_dtype=torch.float16,
+        )
+        model = GPT2LMHeadModel.from_pretrained(
+            model_name,
+            device_map='auto',
+            quantization_config=quantization_config,
+        )
+        print("Model loaded with INT8 quantization (bitsandbytes)")
+    else:
+        # MPS or CPU: load without quantization
+        model = GPT2LMHeadModel.from_pretrained(
+            model_name,
+            device_map='auto',
+        )
+        print("Model loaded without quantization (MPS/CPU device)")
 
     # If wechsel_config is provided and tokenizer needs to be trained, do so before setting up adapters
     if wechsel_config is not None and (path_to_tokenizer is None or not os.path.exists(path_to_tokenizer)):
