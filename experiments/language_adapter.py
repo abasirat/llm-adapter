@@ -268,6 +268,13 @@ def train(model, train_dataloader, device, model_path, num_epochs=1):
 
     model.to(device)
 
+    # Compile the model for faster forward passes
+    try:
+        model = torch.compile(model, backend="auto", mode="default")
+        print(f"Model compiled successfully on {device_type}")
+    except Exception as e:
+        print(f"torch.compile() not available or failed: {e}. Training with standard model.")
+
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0
@@ -522,7 +529,13 @@ if __name__ == '__main__':
         )
         collate_fn = collate
 
-    train_dataloader = DataLoader(train_dataset, batch_size, collate_fn=collate_fn, num_workers=0)
+    train_dataloader = DataLoader(
+        train_dataset,
+        batch_size,
+        collate_fn=collate_fn,
+        num_workers=0,
+        pin_memory=True if device.type in ['cuda', 'mps'] else False
+    )
 
     model = train(model, train_dataloader, device, model_path, num_epochs)
 
