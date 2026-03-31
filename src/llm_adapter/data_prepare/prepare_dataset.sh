@@ -22,4 +22,5 @@ python $script --dataset_name $dataset_name \
     --wechsel_tgt_lang da \
     --wechsel_dictionary danish \
     --save_tokenizer $tokenizer_save_path \
-    --max_bin_size_gb .001
+    --max_bin_size_gb 5 \
+    --streaming \
