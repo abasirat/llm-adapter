@@ -21,7 +21,9 @@ def main():
     parser.add_argument('--prompts_file', type=str, required=True,
                         help='Path to input file with prompts (one per line)')
     parser.add_argument('--output_file', type=str, required=True,
-                        help='Path to output file for generation results (JSON)')
+                        help='Path to output file for generation results (JSON or TXT)')
+    parser.add_argument('--output_format', type=str, default='json', choices=['json', 'txt'],
+                        help='Output format: json or txt (default: json)')
 
     # Generation parameters
     parser.add_argument('--max_length', type=int, default=100,
@@ -36,6 +38,10 @@ def main():
                         help='No repeat n-gram size (default: 2)')
     parser.add_argument('--do_sample', type=bool, default=True,
                         help='Use sampling instead of greedy decoding (default: True)')
+    parser.add_argument('--skip_special_tokens', type=bool, default=False,
+                        help='Skip special tokens in output (default: False)')
+    parser.add_argument('--clean_up_spaces', type=bool, default=True,
+                        help='Clean up tokenization spaces (default: True)')
 
     # Device
     parser.add_argument('--device', type=str, default=None,
@@ -81,7 +87,14 @@ def main():
                 no_repeat_ngram_size=args.no_repeat_ngram_size,
             )
 
-            generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+            generated_text = tokenizer.decode(
+                outputs[0],
+                skip_special_tokens=args.skip_special_tokens,
+                clean_up_tokenization_spaces=args.clean_up_spaces
+            )
+
+            # Replace escaped newlines with actual newlines
+            generated_text = generated_text.replace('\\n', '\n')
 
             results.append({
                 "prompt": prompt,
@@ -91,8 +104,15 @@ def main():
 
     # Save results to output file
     print(f"Saving results to {args.output_file}")
-    with open(args.output_file, 'w', encoding='utf-8') as f:
-        json.dump(results, f, indent=2, ensure_ascii=False)
+    if args.output_format == 'json':
+        with open(args.output_file, 'w', encoding='utf-8') as f:
+            json.dump(results, f, indent=2, ensure_ascii=False)
+    else:  # txt format
+        with open(args.output_file, 'w', encoding='utf-8') as f:
+            for result in results:
+                f.write(f"Prompt {result['index']}:\n{result['prompt']}\n\n")
+                f.write(f"Generated:\n{result['generated']}\n")
+                f.write("-" * 80 + "\n\n")
 
     print(f"Generated {len(results)} outputs successfully")
 
