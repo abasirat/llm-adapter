@@ -45,9 +45,12 @@ class LanguageAdapter(torch.nn.Module):
         seq_len = hidden_states.size()[1]
         #causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=hidden_states.device), diagonal=1).bool()
         causal_mask = self.causal_mask[:seq_len, :seq_len]
-
+        
         for block in self.tailor_blocks:
-            hidden_states = block(hidden_states, attention_mask=causal_mask)[0]
+            hidden_states = block(hidden_states, attention_mask=causal_mask)
+
+            if type(hidden_states) == tuple:
+                hidden_states = hidden_states[0]
 
         return hidden_states
 
@@ -85,7 +88,7 @@ class LanguageAdapter(torch.nn.Module):
                 return_dict=return_dict,
                 cache_position=cache_position,
         )
-
+        
         hs = self.tailor(encoder_outputs.last_hidden_state)
 
         return BaseModelOutputWithPastAndCrossAttentions(
