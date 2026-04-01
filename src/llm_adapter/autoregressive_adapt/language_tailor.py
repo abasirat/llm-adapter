@@ -19,7 +19,7 @@ class LanguageAdapter(torch.nn.Module):
         )
 
         device = next(self.parameters()).device
-        ctx_len = encoder.config.n_positions
+        ctx_len = encoder.config.n_ctx
         self.causal_mask = torch.triu(torch.ones(ctx_len, ctx_len, device=device), diagonal=1).bool()
         
         #self.print_trainable_parameters()

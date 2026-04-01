@@ -237,8 +237,8 @@ class WarmUpCosineDecayScheduler:
         """Get the current learning rate."""
         return self.optimizer.param_groups[0]['lr']
 
-def train(model, train_dataloader, device, model_path, num_epochs=1):
-    optimizer = Adam((p for p in model.parameters() if p.requires_grad), lr=learning_rate)
+def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=0.9, adam_beta2=0.999, weight_decay=0.0):
+    optimizer = Adam((p for p in model.parameters() if p.requires_grad), lr=learning_rate, betas=(adam_beta1, adam_beta2), weight_decay=weight_decay)
 
     # Try to get dataloader length, default to None if not available
     try:
@@ -371,6 +371,9 @@ if __name__ == '__main__':
     parser.add_argument('--learning_rate', type=float, default=5e-5, help='Learning rate (default: 5e-5)')
     parser.add_argument('--batch_size', type=int, default=1, help='Batch size (default: 1)')
     parser.add_argument('--context_size', type=int, default=1024, help='Context size (default: 1024)')
+    parser.add_argument('--adam_beta1', type=float, default=0.9, help='Adam beta1 (default: 0.9)')
+    parser.add_argument('--adam_beta2', type=float, default=0.999, help='Adam beta2 (default: 0.999)')
+    parser.add_argument('--weight_decay', type=float, default=0.0, help='Weight decay (L2 penalty) (default: 0.0)')
 
     args = parser.parse_args()
 
@@ -409,13 +412,16 @@ if __name__ == '__main__':
     learning_rate = args.learning_rate
     batch_size = args.batch_size
     context_size = args.context_size
+    adam_beta1 = args.adam_beta1
+    adam_beta2 = args.adam_beta2
+    weight_decay = args.weight_decay
 
     current_date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     
     wandb.init(
-    project=project_name, 
-    name=f"{experiment_description}_{current_date}", 
-    config={                       
+    project=project_name,
+    name=f"{experiment_description}_{current_date}",
+    config={
         "learning_rate": learning_rate,
         "epochs": num_epochs,
         "batch_size": batch_size,
@@ -425,6 +431,9 @@ if __name__ == '__main__':
         "adapter_type": adapter_type,
         "ckeck_point": chkpt,
         "num_epochs": num_epochs,
+        "adam_beta1": adam_beta1,
+        "adam_beta2": adam_beta2,
+        "weight_decay": weight_decay,
     })
 
     device = set_device()
@@ -540,7 +549,7 @@ if __name__ == '__main__':
         pin_memory=True if device.type in ['cuda', 'mps'] else False
     )
 
-    model = train(model, train_dataloader, device, model_path, num_epochs)
+    model = train(model, train_dataloader, device, model_path, num_epochs, adam_beta1, adam_beta2, weight_decay)
 
     save_learnable_params(model, adapter_type, adapter_config, model_path)
 
