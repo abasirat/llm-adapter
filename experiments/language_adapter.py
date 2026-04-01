@@ -307,14 +307,15 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
             
             total_loss += loss.detach().float().item()
 
-            progress_bar.update(progress if progress else 1)
-            progress_bar.set_description(f"running loss: {total_loss/(i+1):.4f}, batch loss: {loss.item():.4f}" +
-                                        (f", LR: {scheduler.get_lr():.6f}" if scheduler else ""))
+            if i % 10 == 0:
+                progress_bar.update(progress if progress else 1)
+                progress_bar.set_description(f"running loss: {total_loss/(i+1):.4f}, batch loss: {loss.item():.4f}" +
+                                            (f", LR: {scheduler.get_lr():.6f}" if scheduler else ""))
 
-            wandb.log({"batch_loss": loss.item()})
-            wandb.log({"avg_loss": total_loss / (i+1)})
-            if scheduler is not None:
-                wandb.log({"learning_rate": scheduler.get_lr()})
+                wandb.log({"batch_loss": loss.item()})
+                wandb.log({"avg_loss": total_loss / (i+1)})
+                if scheduler is not None:
+                    wandb.log({"learning_rate": scheduler.get_lr()})
 
             if i % 1000 == 0:
                 print(f"save parameters - progress {progress}")
