@@ -305,15 +305,15 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
             if scheduler is not None:
                 scheduler.step(progress)
             
-            total_loss += loss.detach().float().item()
+            batch_loss = loss.detach().float().item()
+            total_loss += batch_loss
 
             progress_bar.update(progress if progress else 1)
             if i % 100 == 0:
-                progress_bar.set_description(f"running loss: {total_loss/(i+1):.4f}, batch loss: {loss.item():.4f}" +
+                progress_bar.set_description(f"running loss: {total_loss/(i+1):.4f}, batch loss: {batch_loss:.4f}" +
                                             (f", LR: {scheduler.get_lr():.6f}" if scheduler else ""))
 
-                wandb.log({"batch_loss": loss.detach().float().item()})
-                wandb.log({"avg_loss": total_loss / (i+1)})
+                wandb.log({"batch_loss": batch_loss, "running_loss": total_loss/(i+1)})
                 if scheduler is not None:
                     wandb.log({"learning_rate": scheduler.get_lr()})
 
