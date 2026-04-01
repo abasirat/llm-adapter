@@ -309,7 +309,7 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
             total_loss += batch_loss
 
             progress_bar.update(progress if progress else 1)
-            if i % 100 == 0:
+            if i % 10 == 0:
                 progress_bar.set_description(f"running loss: {total_loss/(i+1):.4f}, batch loss: {batch_loss:.4f}" +
                                             (f", LR: {scheduler.get_lr():.6f}" if scheduler else ""))
 
