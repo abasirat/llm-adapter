@@ -372,6 +372,7 @@ if __name__ == '__main__':
     parser.add_argument('--learning_rate', type=float, default=5e-5, help='Learning rate (default: 5e-5)')
     parser.add_argument('--batch_size', type=int, default=1, help='Batch size (default: 1)')
     parser.add_argument('--context_size', type=int, default=1024, help='Context size (default: 1024)')
+    parser.add_argument('--num_workers', type=int, default=0, help='Number of workers for data loading (default: 0)')
     parser.add_argument('--adam_beta1', type=float, default=0.9, help='Adam beta1 (default: 0.9)')
     parser.add_argument('--adam_beta2', type=float, default=0.999, help='Adam beta2 (default: 0.999)')
     parser.add_argument('--weight_decay', type=float, default=0.0, help='Weight decay (L2 penalty) (default: 0.0)')
@@ -413,6 +414,7 @@ if __name__ == '__main__':
     learning_rate = args.learning_rate
     batch_size = args.batch_size
     context_size = args.context_size
+    num_workers = args.num_workers
     adam_beta1 = args.adam_beta1
     adam_beta2 = args.adam_beta2
     weight_decay = args.weight_decay
@@ -427,6 +429,7 @@ if __name__ == '__main__':
         "epochs": num_epochs,
         "batch_size": batch_size,
         "context_size": context_size,
+        "num_workers": num_workers,
         "model_name": model_name,
         "num_tailor_layers": num_tailor_layers,
         "adapter_type": adapter_type,
@@ -546,7 +549,8 @@ if __name__ == '__main__':
         train_dataset,
         batch_size,
         collate_fn=collate_fn,
-        num_workers=0,
+        num_workers=num_workers,
+        persistent_workers=num_workers > 0,
         pin_memory=True if device.type in ['cuda', 'mps'] else False
     )
 
