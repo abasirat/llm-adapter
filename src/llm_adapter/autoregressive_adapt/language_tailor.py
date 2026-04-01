@@ -88,7 +88,7 @@ class LanguageAdapter(torch.nn.Module):
                 return_dict=return_dict,
                 cache_position=cache_position,
         )
-        
+
         hs = self.tailor(encoder_outputs.last_hidden_state)
 
         return BaseModelOutputWithPastAndCrossAttentions(
