@@ -93,19 +93,19 @@ def save_learnable_params(model, adapter_type, adapter_config, save_path="learna
     save_path)
     print(f"Parameters saved to {save_path}")
 
-def load_learnable_params(save_path):
-    saved_params = torch.load(save_path, map_location="cpu", weights_only=False)
+def load_learnable_params(param_path, tokenizer_path=None):
+    saved_params = torch.load(param_path, map_location="cpu", weights_only=False)
 
     model_name = saved_params['encoder_config'].name_or_path
     num_tailor_layers = saved_params['num_tailor_layers']
     adapter_type = saved_params['adapter_type']
     adapter_config = saved_params['adapter_config']
-    model, tokenizer = setup_model(model_name, adapter_type, adapter_config, num_tailor_layers)
+    model, tokenizer = setup_model(model_name, adapter_type, adapter_config, num_tailor_layers, path_to_tokenizer=tokenizer_path)
     
     model_state_dict = model.state_dict()
     model_state_dict.update(saved_params['learnable_params'])
     model.load_state_dict(model_state_dict)
-    print(f"Parameters loaded from {save_path}")
+    print(f"Parameters loaded from {param_path}")
     return model, tokenizer, adapter_config
 
 def train_tokenizer(train_corpus_path=None, source_tokenizer=None, model=None, source_language=None, target_language=None, dictionary=None, chunk_size=4*1024, dataset=None, text_column="text", max_train_size=None):
