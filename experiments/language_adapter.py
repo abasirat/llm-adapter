@@ -322,7 +322,7 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
 
             if i % 1000 == 0:
                 print(f"save parameters - progress {progress}")
-                save_learnable_params(raw_model, adapter_type, adapter_config, model_path+'-trace')
+                save_learnable_params(raw_model, adapter_type, adapter_config, model_path+'-trace', wechsel_config=wechsel_config, tokenizer_path=tokenizer_path)
 
         progress_bar.close()
 
