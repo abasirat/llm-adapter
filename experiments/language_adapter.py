@@ -280,6 +280,7 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
         model.train()
         total_loss = 0.0
         num_batches = 0
+        acc_loss = []
 
         # Use progress bar without total if length is unknown
         progress_bar = tqdm(total=dataloader_len, desc="Processing")
@@ -309,14 +310,17 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
             batch_loss = loss.detach().float().item()
             total_loss += batch_loss
             num_batches += 1
+            acc_loss.append(batch_loss)
 
             progress_bar.update(progress if progress else 1)
             if i % 10 == 0:
                 running_loss = total_loss / num_batches
-                progress_bar.set_description(f"running loss: {running_loss:.4f}, batch loss: {batch_loss:.4f}" +
+                avg_acc_loss = sum(acc_loss) / len(acc_loss) if acc_loss else 0.0
+                acc_loss = []
+                progress_bar.set_description(f"running loss: {running_loss:.4f}, batch loss: {avg_acc_loss:.4f}" +
                                             (f", LR: {scheduler.get_lr():.6f}" if scheduler else ""))
 
-                wandb.log({"batch_loss": batch_loss, "running_loss": running_loss})
+                wandb.log({"batch_loss": avg_acc_loss, "running_loss": running_loss})
                 if scheduler is not None:
                     wandb.log({"learning_rate": scheduler.get_lr()})
 
