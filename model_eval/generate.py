@@ -60,7 +60,7 @@ def main():
 
     # Load model and tokenizer
     print(f"Loading model from {args.model_path}")
-    model, tokenizer, adapter_config = load_learnable_params(args.model_path, tokenizer_path=args.tokenizer_path)
+    model, tokenizer, adapter_config = load_learnable_params(args.model_path)
     model.to(device)
     model.eval()
 
