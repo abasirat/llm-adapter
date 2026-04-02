@@ -41,7 +41,7 @@ class LanguageAdapter(torch.nn.Module):
                 trainable_params += num_params
         print(f"trainable params: {trainable_params:,d} || all params: {all_param:,d} || trainable%: {100 * trainable_params / all_param}")
     
-    def tailor(self, hidden_states):
+    def tailor_old(self, hidden_states):
         seq_len = hidden_states.size()[1]
         #causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=hidden_states.device), diagonal=1).bool()
         causal_mask = self.causal_mask[:seq_len, :seq_len]
@@ -52,6 +52,13 @@ class LanguageAdapter(torch.nn.Module):
             if type(hidden_states) == tuple:
                 hidden_states = hidden_states[0]
 
+        return hidden_states
+    
+    def tailor(self, hidden_states, attention_mask=None):
+        for block in self.tailor_blocks:
+            hidden_states = block(hidden_states, attention_mask=attention_mask)
+            if isinstance(hidden_states, tuple):
+                hidden_states = hidden_states[0]
         return hidden_states
 
     def forward(
@@ -89,7 +96,19 @@ class LanguageAdapter(torch.nn.Module):
                 cache_position=cache_position,
         )
 
-        hs = self.tailor(encoder_outputs.last_hidden_state)
+        #hs = self.tailor(encoder_outputs.last_hidden_state)
+        tailor_attention_mask = None
+        if attention_mask is not None:
+            # input attention_mask is usually (B, T) with 1 for tokens, 0 for padding
+            tailor_attention_mask = attention_mask.to(dtype=encoder_outputs.last_hidden_state.dtype)
+            tailor_attention_mask = tailor_attention_mask[:, None, None, :]  # (B, 1, 1, T)
+            tailor_attention_mask = (1.0 - tailor_attention_mask) * torch.finfo(encoder_outputs.last_hidden_state.dtype).min
+
+        hs = self.tailor(
+            encoder_outputs.last_hidden_state,
+            attention_mask=tailor_attention_mask,
+        )
+
 
         return BaseModelOutputWithPastAndCrossAttentions(
             last_hidden_state=hs,
