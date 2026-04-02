@@ -190,7 +190,7 @@ class TokenBinDataset(Dataset):
     
     def collate(self, batch):
         input_ids = torch.stack([x['input_ids'] for x in batch])
-        attention_mask = torch.ones_like(input_ids, dtype=torch.long)
+        attention_mask = torch.ones_like(input_ids, dtype=torch.bool)
         progress = None
         return {'input_ids':input_ids, 'attention_mask':attention_mask, 'labels':input_ids}, progress
 
@@ -238,9 +238,16 @@ class WarmUpCosineDecayScheduler:
         return self.optimizer.param_groups[0]['lr']
 
 def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=0.9, adam_beta2=0.999, weight_decay=0.0):
-    optimizer = Adam((p for p in model.parameters() if p.requires_grad), lr=learning_rate, betas=(adam_beta1, adam_beta2), weight_decay=weight_decay)
+    raw_model = model.to(device)
+    trainable_params = [p for p in raw_model.parameters() if p.requires_grad]
 
-    # Try to get dataloader length, default to None if not available
+    optimizer = Adam(
+        trainable_params,
+        lr=learning_rate,
+        betas=(adam_beta1, adam_beta2),
+        weight_decay=weight_decay,
+    )
+
     try:
         dataloader_len = len(train_dataloader)
         total_steps = num_epochs * dataloader_len
@@ -251,37 +258,31 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
 
     if total_steps is not None:
         warmup_steps = int(.1 * total_steps)
-        base_lr = learning_rate
-        scheduler = WarmUpCosineDecayScheduler(optimizer, warmup_steps, total_steps, base_lr)
+        scheduler = WarmUpCosineDecayScheduler(optimizer, warmup_steps, total_steps, learning_rate)
         print(f"LR scheduler set up with {warmup_steps} warmup steps and {total_steps} total steps")
     else:
         scheduler = None
         print("LR scheduler disabled (unknown dataloader length)")
 
-    # Check AMP support
     device_type = device.type
-    use_amp = torch.amp.autocast_mode.is_autocast_available(device_type)
-
-    # GradScaler only for CUDA
-    use_scaler = device_type == "cuda"
-    scaler = torch.amp.GradScaler("cuda", enabled=use_scaler)
-
-    model.to(device)
+    use_amp = device_type == "cuda"
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     # Compile the model for faster forward passes
     try:
-        model = torch.compile(model, backend="auto", mode="default")
+        model = torch.compile(raw_model, backend="auto", mode="default")
         print(f"Model compiled successfully on {device_type}")
     except Exception as e:
         print(f"torch.compile() not available or failed: {e}. Training with standard model.")
+        model = raw_model
 
     for epoch in range(num_epochs):
         model.train()
-        total_loss = 0
+        total_loss = 0.0
+        num_batches = 0
 
         # Use progress bar without total if length is unknown
         progress_bar = tqdm(total=dataloader_len, desc="Processing")
-        batch_count = 0
         for i, (batch, progress) in enumerate(train_dataloader):
             batch = {k:v.to(device) for k,v in batch.items()}
 
@@ -291,44 +292,44 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
                 outputs = model(**batch)
                 loss = outputs.loss
 
-            if use_scaler:
+            if use_amp:
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(trainable_params, 1.0)
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(trainable_params, 1.0)
                 optimizer.step()
 
             if scheduler is not None:
-                scheduler.step(progress)
+                scheduler.step()
             
             batch_loss = loss.detach().float().item()
             total_loss += batch_loss
+            num_batches += 1
 
             progress_bar.update(progress if progress else 1)
             if i % 10 == 0:
-                progress_bar.set_description(f"running loss: {total_loss/(i+1):.4f}, batch loss: {batch_loss:.4f}" +
+                running_loss = total_loss / num_batches
+                progress_bar.set_description(f"running loss: {running_loss:.4f}, batch loss: {batch_loss:.4f}" +
                                             (f", LR: {scheduler.get_lr():.6f}" if scheduler else ""))
 
-                wandb.log({"batch_loss": batch_loss, "running_loss": total_loss/(i+1)})
+                wandb.log({"batch_loss": batch_loss, "running_loss": running_loss})
                 if scheduler is not None:
                     wandb.log({"learning_rate": scheduler.get_lr()})
 
             if i % 1000 == 0:
                 print(f"save parameters - progress {progress}")
-                save_learnable_params(model, adapter_type, adapter_config, model_path+'-trace')
-
-            batch_count = i
+                save_learnable_params(raw_model, adapter_type, adapter_config, model_path+'-trace')
 
         progress_bar.close()
 
-        avg_loss = total_loss / (batch_count + 1)
+        avg_loss = total_loss / max(num_batches, 1)
         wandb.log({"epoch": epoch + 1, "avg_loss": avg_loss})
         print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {avg_loss:.4f}")
-    return model
+    return raw_model
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train a language model with adapters')
@@ -452,8 +453,8 @@ if __name__ == '__main__':
             adapter_config = None
         elif adapter_type == 'layer_adapter':
             adapter_config = {
-                'hidden_size': 768,
-                'num_heads': 12,
+                'hidden_size': None,
+                'num_heads': None,
             }
         elif adapter_type == 'lora':
             adapter_config = LoraConfig(
