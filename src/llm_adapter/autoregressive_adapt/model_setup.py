@@ -46,9 +46,10 @@ def setup_model(model_name='gpt2', adapter_type='none', adapter_config=None, num
             tokenizer.save_pretrained(path_to_tokenizer)
             print(f"Tokenizer saved to {path_to_tokenizer}")
 
+    # Freeze all base model parameters
     for param in model.parameters(): 
         param.requires_grad = False
-    print_trainable_parameters(model, "Base Model")
+    print_trainable_parameters(model, "Base Model Frozen")
 
     if adapter_type == 'layer_adapter':
         model.transformer = LayerAdapter(model.transformer, **adapter_config)
@@ -59,11 +60,20 @@ def setup_model(model_name='gpt2', adapter_type='none', adapter_config=None, num
     
     # the task specific tailor module
     model.transformer = LanguageAdapter(model.transformer, num_tailor_layers)
+    print_trainable_parameters(model, "Tailored")
+
+    # Make input and output embeddings trainable by default
+    # Note that in GPT-2, input and output embeddings are tied, so we only need to make the input embeddings trainable. If using a model with separate output embeddings, we would also need to make those trainable.
+    model.transformer.encoder.encoder.get_input_embeddings().weight.requires_grad = True
+    if not model.config.tie_word_embeddings:
+        model.transformer.encoder.encoder.get_output_embeddings().weight.requires_grad = True
+    print_trainable_parameters(model, "Embeddings")
 
     # Make lm_head trainable
+    # In GPT-2, the lm_head is tied to the input embeddings, so if the input embeddings are trainable, the lm_head will be trainable as well. If using a model with separate lm_head, we would need to make that trainable explicitly.
     for param in model.lm_head.parameters():
         param.requires_grad = True
-    print_trainable_parameters(model, "Tailored")
+    print_trainable_parameters(model, "Headed")
 
     return model, tokenizer
 
@@ -81,31 +91,61 @@ def print_trainable_parameters(model, message):
             trainable_params += num_params
     print(f"{message} trainable params: {trainable_params:,d} || all params: {all_param:,d} || trainable%: {100 * trainable_params / all_param}")
 
-def save_learnable_params(model, adapter_type, adapter_config, save_path="learnable_params.pth"):
-    learnable_params = {name: param for name, param in model.named_parameters() if param.requires_grad}
-    torch.save({
-        'learnable_params':learnable_params, 
-        'encoder_config': model.config,
-        'adapter_type': adapter_type,
-        'adapter_config': adapter_config,
-        'num_tailor_layers': model.transformer.num_tailor_layers
-    },
-    save_path)
+def save_learnable_params(
+    model,
+    adapter_type,
+    adapter_config,
+    save_path="learnable_params.pth",
+    wechsel_config=None,
+    tokenizer_path=None,
+):
+    learnable_params = {
+        name: param.detach().cpu()
+        for name, param in model.named_parameters()
+        if param.requires_grad
+    }
+
+    payload = {
+        "learnable_params": learnable_params,
+        "model_name": model.config.name_or_path,
+        "adapter_type": adapter_type,
+        "adapter_config": adapter_config,
+        "num_tailor_layers": model.transformer.num_tailor_layers,
+        "wechsel_config": wechsel_config,
+        "tokenizer_path": tokenizer_path,
+    }
+
+    torch.save(payload, save_path)
     print(f"Parameters saved to {save_path}")
 
-def load_learnable_params(param_path, tokenizer_path=None):
+def load_learnable_params(param_path):
     saved_params = torch.load(param_path, map_location="cpu", weights_only=False)
 
-    model_name = saved_params['encoder_config'].name_or_path
-    num_tailor_layers = saved_params['num_tailor_layers']
-    adapter_type = saved_params['adapter_type']
-    adapter_config = saved_params['adapter_config']
-    model, tokenizer = setup_model(model_name, adapter_type, adapter_config, num_tailor_layers, path_to_tokenizer=tokenizer_path)
-    
-    model_state_dict = model.state_dict()
-    model_state_dict.update(saved_params['learnable_params'])
-    model.load_state_dict(model_state_dict)
+    model_name = saved_params["model_name"]
+    num_tailor_layers = saved_params["num_tailor_layers"]
+    adapter_type = saved_params["adapter_type"]
+    adapter_config = saved_params["adapter_config"]
+    wechsel_config = saved_params.get("wechsel_config", None)
+    tokenizer_path = saved_params.get("tokenizer_path", None)
+
+    model, tokenizer = setup_model(
+        model_name=model_name,
+        adapter_type=adapter_type,
+        adapter_config=adapter_config,
+        num_tailor_layers=num_tailor_layers,
+        wechsel_config=wechsel_config,
+        path_to_tokenizer=tokenizer_path,
+    )
+
+    # Restore trainable params
+    missing, unexpected = model.load_state_dict(saved_params["learnable_params"], strict=False)
+
     print(f"Parameters loaded from {param_path}")
+    if missing:
+        print("Missing keys:", missing)
+    if unexpected:
+        print("Unexpected keys:", unexpected)
+
     return model, tokenizer, adapter_config
 
 def train_tokenizer(train_corpus_path=None, source_tokenizer=None, model=None, source_language=None, target_language=None, dictionary=None, chunk_size=4*1024, dataset=None, text_column="text", max_train_size=None):
