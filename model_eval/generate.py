@@ -1,12 +1,11 @@
+import pdb
 import sys
 import torch
 import argparse
 import json
 from pathlib import Path
-from llm_adapter import load_learnable_params
-from transformers import AutoTokenizer
+from llm_adapter import load_model
 from tqdm import tqdm
-
 
 def main():
     parser = argparse.ArgumentParser(description='Generate text using a trained language model')
@@ -60,7 +59,7 @@ def main():
 
     # Load model and tokenizer
     print(f"Loading model from {args.model_path}")
-    model, tokenizer, adapter_config = load_learnable_params(args.model_path)
+    model, tokenizer, adapter_config = load_model(args.model_path, tokenizer_path=args.tokenizer_path)
     model.to(device)
     model.eval()
 

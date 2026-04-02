@@ -91,12 +91,13 @@ def print_trainable_parameters(model, message):
             trainable_params += num_params
     print(f"{message} trainable params: {trainable_params:,d} || all params: {all_param:,d} || trainable%: {100 * trainable_params / all_param}")
 
-def save_learnable_params(
+def save_model(
     model,
     adapter_type,
     adapter_config,
     save_path="learnable_params.pth",
     wechsel_config=None,
+    tokenizer=None,
     tokenizer_path=None,
 ):
     learnable_params = {
@@ -112,13 +113,16 @@ def save_learnable_params(
         "adapter_config": adapter_config,
         "num_tailor_layers": model.transformer.num_tailor_layers,
         "wechsel_config": wechsel_config,
-        "tokenizer_path": tokenizer_path,
     }
 
     torch.save(payload, save_path)
     print(f"Parameters saved to {save_path}")
 
-def load_learnable_params(param_path):
+    if tokenizer is not None and tokenizer_path is not None:
+        tokenizer.save_pretrained(tokenizer_path)
+        print(f"Tokenizer saved to {tokenizer_path}")
+
+def load_model(param_path, tokenizer_path=None):
     saved_params = torch.load(param_path, map_location="cpu", weights_only=False)
 
     model_name = saved_params["model_name"]
@@ -126,7 +130,6 @@ def load_learnable_params(param_path):
     adapter_type = saved_params["adapter_type"]
     adapter_config = saved_params["adapter_config"]
     wechsel_config = saved_params.get("wechsel_config", None)
-    tokenizer_path = saved_params.get("tokenizer_path", None)
 
     model, tokenizer = setup_model(
         model_name=model_name,
