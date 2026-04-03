@@ -1,7 +1,11 @@
+import pdb
+
 import torch
+import copy
 from typing import Optional, Tuple, Union
-from transformers.models.gpt2.modeling_gpt2 import GPT2Block
+#from transformers.models.gpt2.modeling_gpt2 import GPT2Block
 from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions
+import copy
 
 class LanguageAdapter(torch.nn.Module):
     def __init__(self, 
@@ -13,13 +17,21 @@ class LanguageAdapter(torch.nn.Module):
 
         self.encoder = encoder
         self.config = self.encoder.config
+        
+        tailor_block = self.encoder.h[-1]
 
         self.num_tailor_layers = num_tailor_layers
         self.tailor_blocks = torch.nn.ModuleList(
-            [GPT2Block(encoder.config, layer_idx=i) for i in range(num_tailor_layers)]
+            [self.create_tailor_block() for i in range(num_tailor_layers)]
         )
 
         self.output_dropout = torch.nn.Dropout(dropout)
+    
+    def create_tailor_block(self):
+        block = copy.deepcopy(self.encoder.h[-1])
+        for param in block.parameters():
+            param.requires_grad = True
+        return block
         
     def print_trainable_parameters(self):
         """
