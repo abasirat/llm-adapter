@@ -7,6 +7,7 @@ class LanguageAdapter(torch.nn.Module):
     def __init__(self, 
             encoder, 
             num_tailor_layers=1,
+            dropout=0.1,
         ):
         super(LanguageAdapter, self).__init__()
 
@@ -15,9 +16,9 @@ class LanguageAdapter(torch.nn.Module):
 
         self.num_tailor_layers = num_tailor_layers
         self.tailor_blocks = torch.nn.ModuleList(
-            [GPT2Block(encoder.config, layer_idx=i) for i in range(num_tailor_layers)]
+            [GPT2Block(encoder.config, layer_idx=i, dropout=dropout) for i in range(num_tailor_layers)]
         )
-
+        
         device = next(self.parameters()).device
         ctx_len = encoder.config.n_ctx
         self.causal_mask = torch.triu(torch.ones(ctx_len, ctx_len, device=device), diagonal=1).bool()

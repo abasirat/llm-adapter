@@ -10,6 +10,7 @@ class LayerAdapter(torch.nn.Module):
             hidden_size=None,
             num_heads=None,
             need_weights=False,
+            dropout=0.1,
         ):
         super(LayerAdapter, self).__init__()
 
@@ -35,7 +36,8 @@ class LayerAdapter(torch.nn.Module):
                 num_heads = nh, 
                 kdim = hs,
                 vdim = hs,
-                batch_first = True
+                batch_first = True,
+                dropout = dropout,
         )
 
         for param in self.encoder.parameters(): 
@@ -49,7 +51,7 @@ class LayerAdapter(torch.nn.Module):
             print("this implementation works only with standard gpt and bert families from huggingface")
             raise NotImplementedError
         
-        #self.print_trainable_parameters()
+        self.output_dropout = torch.nn.Dropout(dropout)
 
     def print_trainable_parameters(self):
         """
@@ -129,7 +131,9 @@ class LayerAdapter(torch.nn.Module):
             r = r.masked_fill(key_padding_mask.unsqueeze(-1), 0.0)
             if attn_weights is not None:
                 attn_weights = attn_weights.masked_fill(key_padding_mask.unsqueeze(-1), 0.0)
-
+        
+        r = self.output_dropout(r)
+        
         return r, attn_weights
 
     def forward_bert(self,
