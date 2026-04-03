@@ -554,7 +554,8 @@ if __name__ == '__main__':
             adapter_config = {
                 'hidden_size': None,
                 'num_heads': None,
-                'need_weights': False
+                'need_weights': False,
+                'dropout': 0.1,
             }
         elif adapter_type == 'lora':
             adapter_config = LoraConfig(

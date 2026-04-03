@@ -53,13 +53,15 @@ def setup_model(model_name='gpt2', adapter_type='none', adapter_config=None, num
 
     if adapter_type == 'layer_adapter':
         model.transformer = LayerAdapter(model.transformer, **adapter_config)
+        dropout = adapter_config.get('dropout', 0.1)
         print_trainable_parameters(model, "Layer Adapted")
     elif adapter_type == 'lora':
         model = get_peft_model(model, adapter_config)
+        dropout = adapter_config.lora_dropout
         print_trainable_parameters(model, "Lora")
     
     # the task specific tailor module
-    model.transformer = LanguageAdapter(model.transformer, num_tailor_layers, dropout=adapter_config.get('dropout', 0.1))
+    model.transformer = LanguageAdapter(model.transformer, num_tailor_layers, dropout=dropout)
     print_trainable_parameters(model, "Tailored")
 
     # Make input and output embeddings trainable by default
