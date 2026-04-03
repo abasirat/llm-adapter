@@ -334,8 +334,8 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
                 
                 # Early stopping check
                 if early_stopping_patience > 0:
-                    if min(acc_loss) < best_loss - early_stopping_min_delta:
-                        best_loss = min(acc_loss)
+                    if avg_acc_loss < best_loss - early_stopping_min_delta:
+                        best_loss = avg_acc_loss
                         patience_counter = 0
                     else:
                         patience_counter += 1
