@@ -16,15 +16,11 @@ class LanguageAdapter(torch.nn.Module):
 
         self.num_tailor_layers = num_tailor_layers
         self.tailor_blocks = torch.nn.ModuleList(
-            [GPT2Block(encoder.config, layer_idx=i, dropout=dropout) for i in range(num_tailor_layers)]
+            [GPT2Block(encoder.config, layer_idx=i) for i in range(num_tailor_layers)]
         )
-        
-        device = next(self.parameters()).device
-        ctx_len = encoder.config.n_ctx
-        self.causal_mask = torch.triu(torch.ones(ctx_len, ctx_len, device=device), diagonal=1).bool()
-        
-        #self.print_trainable_parameters()
 
+        self.output_dropout = torch.nn.Dropout(dropout)
+        
     def print_trainable_parameters(self):
         """
             Prints the number of trainable parameters in the model.
@@ -42,24 +38,12 @@ class LanguageAdapter(torch.nn.Module):
                 trainable_params += num_params
         print(f"trainable params: {trainable_params:,d} || all params: {all_param:,d} || trainable%: {100 * trainable_params / all_param}")
     
-    def tailor_old(self, hidden_states):
-        seq_len = hidden_states.size()[1]
-        #causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=hidden_states.device), diagonal=1).bool()
-        causal_mask = self.causal_mask[:seq_len, :seq_len]
-        
-        for block in self.tailor_blocks:
-            hidden_states = block(hidden_states, attention_mask=causal_mask)
-
-            if type(hidden_states) == tuple:
-                hidden_states = hidden_states[0]
-
-        return hidden_states
-    
     def tailor(self, hidden_states, attention_mask=None):
         for block in self.tailor_blocks:
             hidden_states = block(hidden_states, attention_mask=attention_mask)
             if isinstance(hidden_states, tuple):
                 hidden_states = hidden_states[0]
+        hidden_states = self.output_dropout(hidden_states)
         return hidden_states
 
     def forward(
