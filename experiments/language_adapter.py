@@ -147,7 +147,7 @@ class TokenBinDataset(Dataset):
     the sidecar is absent.
     """
 
-    def __init__(self, bin_path: str, context_size: int = 1024, max_tokens: int = None):
+    def __init__(self, bin_path: str, context_size: int = 1024, max_tokens: int = None, start_token: int = 0, end_token: int = None):
         if not os.path.exists(bin_path):
             raise FileNotFoundError(f"Token-bin file not found: {bin_path}")
 
@@ -164,32 +164,40 @@ class TokenBinDataset(Dataset):
             print(f"TokenBinDataset: no metadata sidecar found, defaulting to uint16")
 
         self.context_size = context_size
+        self.start_token = start_token
 
         if max_tokens is not None:
             self.data = np.memmap(bin_path, dtype=dtype, mode='r', shape=(max_tokens,))
             print(f"TokenBinDataset: loading with max_tokens={max_tokens}")
         else:
             self.data = np.memmap(bin_path, dtype=dtype, mode='r')
-        
-        self.num_tokens = len(self.data)
+
+        # Support slicing the dataset
+        if end_token is None:
+            end_token = len(self.data)
+        self.end_token = min(end_token, len(self.data))
+
+        self.num_tokens = self.end_token - self.start_token
         self.num_chunks = int(np.ceil(self.num_tokens / context_size))
 
         print(f"  total tokens : {self.num_tokens:,}")
         print(f"  context size : {context_size}")
         print(f"  chunks       : {self.num_chunks:,}")
+        if start_token > 0 or end_token < len(self.data):
+            print(f"  token range  : {start_token:,} - {self.end_token:,}")
 
     def __len__(self):
         return self.num_chunks
 
     def __getitem__(self, idx):
-        start = idx * self.context_size
-        end = min(start + self.context_size, self.num_tokens)
+        start = self.start_token + idx * self.context_size
+        end = min(start + self.context_size, self.end_token)
         chunk = self.data[start : end].astype(np.int64)
         input_ids = torch.from_numpy(np.array(chunk))  # copy out of memmap
         return {"input_ids": input_ids, "progress": 1}
-    
+
     def collate(self, batch):
-        input_ids = torch.stack([x['input_ids'] for x in batch])
+        input_ids = torch.stack([x['input_ids'] for x in batch if len(x['input_ids']) == self.context_size]) # Only include full context windows
         attention_mask = torch.ones_like(input_ids, dtype=torch.bool)
         progress = None
         return {'input_ids':input_ids, 'attention_mask':attention_mask, 'labels':input_ids}, progress
@@ -237,7 +245,38 @@ class WarmUpCosineDecayScheduler:
         """Get the current learning rate."""
         return self.optimizer.param_groups[0]['lr']
 
-def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=0.9, adam_beta2=0.999, weight_decay=0.0, early_stopping_patience=3, early_stopping_min_delta=1e-4):
+def validate(model, val_dataloader, device, device_type, use_amp):
+    """
+    Perform validation on a dataset and compute average loss.
+
+    Args:
+        model: PyTorch model to validate
+        val_dataloader: DataLoader for validation data
+        device: torch.device to run on
+        device_type: device type ('cuda', 'mps', 'cpu')
+        use_amp: whether to use automatic mixed precision
+
+    Returns:
+        avg_loss: average loss across all validation batches
+        num_batches: number of batches processed
+    """
+    model.eval()
+    val_loss = 0.0
+    num_batches = 0
+
+    with torch.no_grad():
+        for val_batch, _ in tqdm(val_dataloader, desc="Validating"):
+            val_batch = {k: v.to(device) for k, v in val_batch.items()}
+            with torch.autocast(device_type=device_type, dtype=torch.float16, enabled=use_amp):
+                outputs = model(**val_batch)
+                loss = outputs.loss
+            val_loss += loss.detach().float().item()
+            num_batches += 1
+
+    avg_loss = val_loss / max(num_batches, 1)
+    return avg_loss, num_batches
+
+def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=0.9, adam_beta2=0.999, weight_decay=0.0, early_stopping_patience=3, early_stopping_min_delta=1e-4, val_dataloader=None):
     raw_model = model.to(device)
     trainable_params = [p for p in raw_model.parameters() if p.requires_grad]
 
@@ -277,10 +316,13 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
         model = raw_model
 
     # Early stopping setup
-    best_loss = float('inf')
+    best_val_loss = float('inf')
     patience_counter = 0
     if early_stopping_patience > 0:
-        print(f"Early stopping enabled: patience={early_stopping_patience}, min_delta={early_stopping_min_delta}")
+        if val_dataloader is not None:
+            print(f"Early stopping enabled (validation-based): patience={early_stopping_patience}, min_delta={early_stopping_min_delta}")
+        else:
+            print(f"Early stopping enabled (training-based): patience={early_stopping_patience}, min_delta={early_stopping_min_delta}")
     else:
         print("Early stopping disabled")
 
@@ -314,7 +356,7 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
 
             if scheduler is not None:
                 scheduler.step()
-            
+
             batch_loss = loss.detach().float().item()
             total_loss += batch_loss
             num_batches += 1
@@ -324,27 +366,33 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
             if i % 10 == 0:
                 running_loss = total_loss / num_batches
                 avg_acc_loss = sum(acc_loss) / len(acc_loss) if acc_loss else 0.0
-                progress_bar.set_description(f"running loss: {running_loss:.2f}, batch loss: {avg_acc_loss:.2f}" +
-                                            (f", LR: {scheduler.get_lr():.2e}" if scheduler else "") + 
-                                            (f", best loss: {best_loss:.2f}, patience: {patience_counter}/{early_stopping_patience}"))
+                progress_bar.set_description((f"running loss: {running_loss:.2f}, batch loss: {avg_acc_loss:.2f}") +
+                                            (f", LR: {scheduler.get_lr():.0e}" if scheduler else "") +
+                                            (f", best val loss: {best_val_loss:.2f}, patience: {patience_counter}/{early_stopping_patience}"))
 
                 wandb.log({"batch_loss": avg_acc_loss, "running_loss": running_loss})
                 if scheduler is not None:
                     wandb.log({"learning_rate": scheduler.get_lr()})
                 
-                # Early stopping check
-                if early_stopping_patience > 0:
-                    if avg_acc_loss < best_loss - early_stopping_min_delta:
-                        best_loss = avg_acc_loss
-                        patience_counter = 0
-                    else:
-                        patience_counter += 1
-                        if patience_counter >= early_stopping_patience:
-                            print("Early stopping triggered. Leaving batch training.")
-                            break
                 acc_loss = []
 
             if i % 1000 == 0:
+                # Early stopping check (training-based, only if no validation set)
+                if val_dataloader is not None and early_stopping_patience > 0:
+                    avg_val_loss, _ = validate(model, val_dataloader, device, device_type, use_amp)
+                    wandb.log({"val_loss": avg_val_loss})
+                    print(f"Val Loss: {avg_val_loss:.4f}")
+                    if avg_val_loss < best_val_loss - early_stopping_min_delta:
+                        best_val_loss = avg_val_loss
+                        patience_counter = 0
+                        save_model(raw_model, adapter_type, adapter_config, model_path+'-best')
+                    else:
+                        patience_counter += 1
+                        if patience_counter >= early_stopping_patience:
+                            print("Early stopping triggered. Ending training.")
+                            break
+
+                
                 print(f"save parameters - progress {progress}")
                 save_model(raw_model, adapter_type, adapter_config, model_path+'-trace')
 
@@ -352,7 +400,7 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
 
         avg_loss = total_loss / max(num_batches, 1)
         wandb.log({"epoch": epoch + 1, "avg_loss": avg_loss})
-        print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {avg_loss:.4f}")
+        print(f"Epoch {epoch + 1}/{num_epochs}, Train Loss: {avg_loss:.4f}")
 
         if patience_counter >= early_stopping_patience:
             print("Early stopping triggered. Ending training.")
@@ -408,6 +456,8 @@ if __name__ == '__main__':
     parser.add_argument('--weight_decay', type=float, default=0.0, help='Weight decay (L2 penalty) (default: 0.0)')
     parser.add_argument('--early_stopping_patience', type=int, default=3, help='Early stopping patience (epochs without improvement) (default: 3, 0 to disable)')
     parser.add_argument('--early_stopping_min_delta', type=float, default=1e-4, help='Minimum loss improvement for early stopping (default: 1e-4)')
+    parser.add_argument('--val_fraction', type=float, default=0.0, help='Fraction of training data to use for validation (default: 0.0 = no validation, early stopping disabled)')
+
 
     args = parser.parse_args()
 
@@ -452,6 +502,8 @@ if __name__ == '__main__':
     weight_decay = args.weight_decay
     early_stopping_patience = args.early_stopping_patience
     early_stopping_min_delta = args.early_stopping_min_delta
+    val_fraction = args.val_fraction
+
 
     current_date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     
@@ -554,10 +606,36 @@ if __name__ == '__main__':
     # Create training dataset
     if args.token_bin is not None:
         print(f"Creating training dataset from pre-tokenized binary: {args.token_bin}")
-        train_dataset = TokenBinDataset(
+        full_dataset = TokenBinDataset(
             bin_path=args.token_bin,
             context_size=context_size,
         )
+
+        # Split into train and validation if requested
+        if val_fraction > 0:
+            val_size = int(full_dataset.num_chunks * val_fraction)
+            train_size = full_dataset.num_chunks - val_size
+
+            # Calculate token boundaries for slicing
+            val_start_token = train_size * context_size
+
+            train_dataset = TokenBinDataset(
+                bin_path=args.token_bin,
+                context_size=context_size,
+                end_token=val_start_token,
+            )
+            val_dataset = TokenBinDataset(
+                bin_path=args.token_bin,
+                context_size=context_size,
+                start_token=val_start_token,
+            )
+            print(f"Split into train ({train_size} chunks) and validation ({val_size} chunks)")
+            val_collate_fn = val_dataset.collate
+        else:
+            train_dataset = full_dataset
+            val_dataset = None
+            val_collate_fn = None
+
         collate_fn = train_dataset.collate
     elif args.train_data is not None:
         print(f"Creating training dataset from file: {args.train_data}")
@@ -568,6 +646,8 @@ if __name__ == '__main__':
             chunk_size=chunk_size
         )
         collate_fn = collate
+        val_dataset = None
+        val_collate_fn = None
     else:
         print(f"Creating training dataset from HuggingFace dataset")
         # Dataset was already loaded above, reuse it
@@ -579,6 +659,8 @@ if __name__ == '__main__':
             text_column=args.text_column
         )
         collate_fn = collate
+        val_dataset = None
+        val_collate_fn = None
 
     train_dataloader = DataLoader(
         train_dataset,
@@ -589,7 +671,18 @@ if __name__ == '__main__':
         pin_memory=True if device.type in ['cuda', 'mps'] else False
     )
 
-    model = train(model, train_dataloader, device, model_path, num_epochs, adam_beta1, adam_beta2, weight_decay, early_stopping_patience, early_stopping_min_delta)
+    val_dataloader = None
+    if val_dataset is not None:
+        val_dataloader = DataLoader(
+            val_dataset,
+            batch_size * 2, # Use larger batch size for validation if possible (no gradients)
+            collate_fn=val_collate_fn,
+            num_workers=num_workers,
+            persistent_workers=num_workers > 0,
+            pin_memory=True if device.type in ['cuda', 'mps'] else False
+        )
+
+    model = train(model, train_dataloader, device, model_path, num_epochs, adam_beta1, adam_beta2, weight_decay, early_stopping_patience, early_stopping_min_delta, val_dataloader)
 
     save_model(model, adapter_type, adapter_config, model_path)
 
