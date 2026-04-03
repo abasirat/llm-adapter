@@ -59,6 +59,11 @@ def setup_model(model_name='gpt2', adapter_type='none', adapter_config=None, num
         model = get_peft_model(model, adapter_config)
         dropout = adapter_config.lora_dropout
         print_trainable_parameters(model, "Lora")
+    elif adapter_type == 'none':
+        dropout = 0.1
+        print("No adapter, only tailoring")
+    else:
+        raise ValueError(f"Unsupported adapter type: {adapter_type}")
     
     # the task specific tailor module
     model.transformer = LanguageAdapter(model.transformer, num_tailor_layers, dropout=dropout)
