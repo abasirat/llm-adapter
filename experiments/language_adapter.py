@@ -675,7 +675,7 @@ if __name__ == '__main__':
     if val_dataset is not None:
         val_dataloader = DataLoader(
             val_dataset,
-            batch_size * 2, # Use larger batch size for validation if possible (no gradients)
+            batch_size,
             collate_fn=val_collate_fn,
             num_workers=num_workers,
             persistent_workers=num_workers > 0,
