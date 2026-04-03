@@ -458,6 +458,12 @@ if __name__ == '__main__':
     parser.add_argument('--early_stopping_min_delta', type=float, default=1e-4, help='Minimum loss improvement for early stopping (default: 1e-4)')
     parser.add_argument('--val_fraction', type=float, default=0.0, help='Fraction of training data to use for validation (default: 0.0 = no validation, early stopping disabled)')
 
+    # LoRA parameters
+    parser.add_argument('--lora_r', type=int, default=4, help='LoRA rank (r parameter) (default: 4)')
+    parser.add_argument('--lora_alpha', type=int, default=16, help='LoRA alpha (scaling factor) (default: 16)')
+    parser.add_argument('--lora_dropout', type=float, default=0.1, help='LoRA dropout (default: 0.1)')
+    parser.add_argument('--lora_target_modules', type=str, default='attn.c_proj', help='Comma-separated target modules for LoRA (default: attn.c_proj)')
+
 
     args = parser.parse_args()
 
@@ -503,6 +509,10 @@ if __name__ == '__main__':
     early_stopping_patience = args.early_stopping_patience
     early_stopping_min_delta = args.early_stopping_min_delta
     val_fraction = args.val_fraction
+    lora_r = args.lora_r
+    lora_alpha = args.lora_alpha
+    lora_dropout = args.lora_dropout
+    lora_target_modules = [m.strip() for m in args.lora_target_modules.split(',')]
 
 
     current_date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -524,6 +534,10 @@ if __name__ == '__main__':
         "adam_beta1": adam_beta1,
         "adam_beta2": adam_beta2,
         "weight_decay": weight_decay,
+        "lora_r": lora_r,
+        "lora_alpha": lora_alpha,
+        "lora_dropout": lora_dropout,
+        "lora_target_modules": lora_target_modules,
     })
 
     device = set_device()
@@ -545,10 +559,10 @@ if __name__ == '__main__':
         elif adapter_type == 'lora':
             adapter_config = LoraConfig(
                 task_type=TaskType.CAUSAL_LM,
-                r=4,
-                lora_alpha=16,
-                target_modules=["attn.c_proj"],
-                lora_dropout=0.1
+                r=lora_r,
+                lora_alpha=lora_alpha,
+                target_modules=lora_target_modules,
+                lora_dropout=lora_dropout
             )
 
         # Load data source first (needed for tokenizer training)
