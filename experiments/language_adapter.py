@@ -237,7 +237,7 @@ class WarmUpCosineDecayScheduler:
         """Get the current learning rate."""
         return self.optimizer.param_groups[0]['lr']
 
-def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=0.9, adam_beta2=0.999, weight_decay=0.0):
+def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=0.9, adam_beta2=0.999, weight_decay=0.0, early_stopping_patience=3, early_stopping_min_delta=1e-4):
     raw_model = model.to(device)
     trainable_params = [p for p in raw_model.parameters() if p.requires_grad]
 
@@ -275,6 +275,14 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
     except Exception as e:
         print(f"torch.compile() not available or failed: {e}. Training with standard model.")
         model = raw_model
+
+    # Early stopping setup
+    best_loss = float('inf')
+    patience_counter = 0
+    if early_stopping_patience > 0:
+        print(f"Early stopping enabled: patience={early_stopping_patience}, min_delta={early_stopping_min_delta}")
+    else:
+        print("Early stopping disabled")
 
     for epoch in range(num_epochs):
         model.train()
@@ -316,13 +324,25 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
             if i % 10 == 0:
                 running_loss = total_loss / num_batches
                 avg_acc_loss = sum(acc_loss) / len(acc_loss) if acc_loss else 0.0
-                acc_loss = []
-                progress_bar.set_description(f"running loss: {running_loss:.4f}, batch loss: {avg_acc_loss:.4f}" +
-                                            (f", LR: {scheduler.get_lr():.6f}" if scheduler else ""))
+                progress_bar.set_description(f"running loss: {running_loss:.2f}, batch loss: {avg_acc_loss:.2f}" +
+                                            (f", LR: {scheduler.get_lr():.2e}" if scheduler else "") + 
+                                            (f", best loss: {best_loss:.2f}, patience: {patience_counter}/{early_stopping_patience}"))
 
                 wandb.log({"batch_loss": avg_acc_loss, "running_loss": running_loss})
                 if scheduler is not None:
                     wandb.log({"learning_rate": scheduler.get_lr()})
+                
+                # Early stopping check
+                if early_stopping_patience > 0:
+                    if min(acc_loss) < best_loss - early_stopping_min_delta:
+                        best_loss = min(acc_loss)
+                        patience_counter = 0
+                    else:
+                        patience_counter += 1
+                        if patience_counter >= early_stopping_patience:
+                            print("Early stopping triggered. Leaving batch training.")
+                            break
+                acc_loss = []
 
             if i % 1000 == 0:
                 print(f"save parameters - progress {progress}")
@@ -333,6 +353,11 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
         avg_loss = total_loss / max(num_batches, 1)
         wandb.log({"epoch": epoch + 1, "avg_loss": avg_loss})
         print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {avg_loss:.4f}")
+
+        if patience_counter >= early_stopping_patience:
+            print("Early stopping triggered. Ending training.")
+            break
+
     return raw_model
 
 if __name__ == '__main__':
@@ -381,6 +406,8 @@ if __name__ == '__main__':
     parser.add_argument('--adam_beta1', type=float, default=0.9, help='Adam beta1 (default: 0.9)')
     parser.add_argument('--adam_beta2', type=float, default=0.999, help='Adam beta2 (default: 0.999)')
     parser.add_argument('--weight_decay', type=float, default=0.0, help='Weight decay (L2 penalty) (default: 0.0)')
+    parser.add_argument('--early_stopping_patience', type=int, default=3, help='Early stopping patience (epochs without improvement) (default: 3, 0 to disable)')
+    parser.add_argument('--early_stopping_min_delta', type=float, default=1e-4, help='Minimum loss improvement for early stopping (default: 1e-4)')
 
     args = parser.parse_args()
 
@@ -423,6 +450,8 @@ if __name__ == '__main__':
     adam_beta1 = args.adam_beta1
     adam_beta2 = args.adam_beta2
     weight_decay = args.weight_decay
+    early_stopping_patience = args.early_stopping_patience
+    early_stopping_min_delta = args.early_stopping_min_delta
 
     current_date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     
@@ -459,6 +488,7 @@ if __name__ == '__main__':
             adapter_config = {
                 'hidden_size': None,
                 'num_heads': None,
+                'need_weights': False
             }
         elif adapter_type == 'lora':
             adapter_config = LoraConfig(
@@ -559,9 +589,9 @@ if __name__ == '__main__':
         pin_memory=True if device.type in ['cuda', 'mps'] else False
     )
 
-    model = train(model, train_dataloader, device, model_path, num_epochs, adam_beta1, adam_beta2, weight_decay)
+    model = train(model, train_dataloader, device, model_path, num_epochs, adam_beta1, adam_beta2, weight_decay, early_stopping_patience, early_stopping_min_delta)
 
-    save_learnable_params(model, adapter_type, adapter_config, model_path)
+    save_model(model, adapter_type, adapter_config, model_path)
 
     wandb.save(f"{model_path}.wandb")
     wandb.finish()
