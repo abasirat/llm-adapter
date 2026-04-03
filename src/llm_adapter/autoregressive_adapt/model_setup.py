@@ -64,10 +64,10 @@ def setup_model(model_name='gpt2', adapter_type='none', adapter_config=None, num
 
     # Make input and output embeddings trainable by default
     # Note that in GPT-2, input and output embeddings are tied, so we only need to make the input embeddings trainable. If using a model with separate output embeddings, we would also need to make those trainable.
-    model.transformer.encoder.encoder.get_input_embeddings().weight.requires_grad = True
-    if not model.config.tie_word_embeddings:
-        model.transformer.encoder.encoder.get_output_embeddings().weight.requires_grad = True
-    print_trainable_parameters(model, "Embeddings")
+    #model.transformer.encoder.encoder.get_input_embeddings().weight.requires_grad = True
+    #if not model.config.tie_word_embeddings:
+    #    model.transformer.encoder.encoder.get_output_embeddings().weight.requires_grad = True
+    #print_trainable_parameters(model, "Embeddings")
 
     # Make lm_head trainable
     # In GPT-2, the lm_head is tied to the input embeddings, so if the input embeddings are trainable, the lm_head will be trainable as well. If using a model with separate lm_head, we would need to make that trainable explicitly.
