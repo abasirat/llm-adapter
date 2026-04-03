@@ -376,7 +376,7 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
                 
                 acc_loss = []
 
-            if i % 1000 == 0:
+            if i > 0 and i % 1000 == 0: 
                 # Early stopping check (training-based, only if no validation set)
                 if val_dataloader is not None and early_stopping_patience > 0:
                     avg_val_loss, _ = validate(model, val_dataloader, device, device_type, use_amp)
