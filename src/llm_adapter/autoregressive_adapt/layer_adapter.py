@@ -4,6 +4,21 @@ import torch
 from typing import List, Optional, Tuple, Union
 from transformers.modeling_outputs import BaseModelOutputWithPoolingAndCrossAttentions, BaseModelOutputWithPastAndCrossAttentions
 
+class LowRankLinear(torch.nn.Module):
+    def __init__(self, in_features, out_features, rank, bias=True):
+        super().__init__()
+        self.A = torch.nn.Parameter(torch.zeros(out_features, rank))
+        self.B = torch.nn.Parameter(torch.zeros(rank, in_features))
+
+        if bias:
+            self.bias = torch.nn.Parameter(torch.zeros(out_features))
+        else:
+            self.bias = None
+
+    def forward(self, x):
+        W = self.A @ self.B
+        return torch.nn.functional.linear(x, W, self.bias)
+
 class LayerAdapter(torch.nn.Module):
     def __init__(self, 
             encoder, 
@@ -17,20 +32,14 @@ class LayerAdapter(torch.nn.Module):
         input_size = encoder.config.hidden_size
         hs = hidden_size or input_size
         nh = num_heads or encoder.config.n_head
-        nl = encoder.config.n_layer + 1
+        nl = encoder.config.n_layer
 
         self.encoder = encoder
         self.config = encoder.config
 
         self.encoder.eval() # Set encoder to evaluation mode to disable dropout and other training-specific layers. It will speed up inference and reduce memory usage. We will enable grad only for the adapters and lm_head.
 
-        self.query_projection_layer = None
-        self.key_projection_layer = None
         self.need_weights = need_weights
-
-        if hidden_size is not None:
-            self.query_projection_layer = torch.nn.Linear(input_size, hs)
-            self.key_projection_layer = torch.nn.Linear(input_size, hs)
         
         self.token_layer_attention = torch.nn.MultiheadAttention(
                 embed_dim = hs, 
@@ -41,22 +50,25 @@ class LayerAdapter(torch.nn.Module):
                 dropout = dropout,
         )
 
-        #self.inear_transforms = torch.nn.ModuleDict({
-        #    f"layer_{i}": torch.nn.Linear(input_size, hs) for i in range(nl)
-        #})
-
         for param in self.encoder.parameters(): 
             param.requires_grad = False
         
+        self.before_mlp_activations = []
         if self.encoder.name_or_path.startswith("gpt"):
+            self.hooks = self.hook_before_each_mlp_in_gpt()
             self.forward = self.forward_gpt
         elif self.encoder.name_or_path.startswith("bert"):
+            self.hooks = self.hook_before_each_mlp_in_bert()
             self.forward = self.forward_bert
         else:
             print("this implementation works only with standard gpt and bert families from huggingface")
             raise NotImplementedError
         
         self.output_dropout = torch.nn.Dropout(dropout)
+
+        self.pre_mlp_linear_transforms = torch.nn.ModuleDict({
+            f"layer_{i}": LowRankLinear(input_size, hs, rank=8) for i in range(nl)
+        })
 
     def print_trainable_parameters(self):
         """
@@ -74,54 +86,50 @@ class LayerAdapter(torch.nn.Module):
             if param.requires_grad:
                 trainable_params += num_params
         print(f"layer-wise adapter's trainable params: {trainable_params:,d} || all params: {all_param:,d} || trainable%: {100 * trainable_params / all_param}")
-
-    def aggregator_old(self, inputs, key_padding_mask):
-        Q = torch.mean(inputs,-1)
-        if self.query_projection_layer:
-            Q = self.query_projection_layer(Q)
-
-        K = torch.mean(inputs,1).transpose(1,2)
-        if self.key_projection_layer:
-            K = self.key_projection_layer(K)
-
-        _, NQK = self.token_layer_attention(Q,K,K,need_weights=True)
-        if key_padding_mask is not None:
-            NQK[key_padding_mask] = 0 
-        r = torch.einsum('bdnm,bnm->bnd', inputs.transpose(1,2), NQK)
-        return r, NQK
     
-    def aggregator(self, inputs, key_padding_mask=None, need_weights=False):
+    def hook_before_each_mlp_in_gpt(self):
+        def make_mlp_input_hook():
+            def hook(module, inputs):
+                # inputs is a tuple; first element is the tensor entering the MLP
+                self.before_mlp_activations.append(inputs[0])
+            return hook
+
+        hooks = []
+        for block in self.encoder.h:
+            h = block.mlp.register_forward_pre_hook(make_mlp_input_hook())
+            hooks.append(h)
+        return hooks
+    
+    def hook_before_each_mlp_in_bert(self):
+        raise NotImplementedError("BERT-style models not implemented yet. GPT-style models only for now.")
+        
+    def aggregator(self, hidden_states, pre_mlp_activations, key_padding_mask=None, need_weights=False):
         """
-        inputs: (B, T, D, L)
+        hidden_states: (B, T, D, L)
             B = batch
             T = sequence length
             D = hidden size
             L = number of hidden-state layers being aggregated
+        
+        pre_mlp_activations: (B, T, D, L)
 
         Returns:
             r:   (B, T, D)      aggregated representation
             w:   (B, T, L)      per-token layer weights
         """
 
+        
+        inputs = hidden_states + torch.stack([self.pre_mlp_linear_transforms[f"layer_{i}"](pre_mlp_activations[..., i]) for i in range(pre_mlp_activations.size(-1))], dim=-1) # shape (B, T, D, L)
+
         # Query from the same token position, averaged over layers
         # Q: (B, T, D)
-        #Q = inputs.mean(dim=-1)
-        Q = inputs[..., -1] # use the top layer as query
-        if self.query_projection_layer is not None:
-            Q = self.query_projection_layer(Q)
-
+        Q = hidden_states[..., -1] # use the top layer as query
         # Keys/values are the layer representations for the SAME token only.
         # Rearrange to: (B*T, ??
-
-        KV = inputs[...,1:].permute(0, 1, 3, 2).contiguous().view(-1, inputs.size(-1)-1, inputs.size(2))
+        KV = inputs.permute(0, 1, 3, 2).contiguous().view(-1, inputs.size(-1), inputs.size(2))
 
         K = KV
-        if self.key_projection_layer is not None:
-            K = self.key_projection_layer(K)
         V = KV
-
-        # Apply separate linear layer to each layer's representation before attention
-        #V = torch.stack([self.inear_transforms[f"layer_{i}"](inputs[..., i]) for i in range(inputs.size(-1))], dim=-1).permute(0, 1, 3, 2).contiguous().view(-1, inputs.size(-1), inputs.size(2))
 
         # Query per token: (B*T, 1, D)
         Q_bt = Q.contiguous().view(-1, 1, Q.size(-1))
@@ -174,8 +182,10 @@ class LayerAdapter(torch.nn.Module):
             )
 
         key_padding_mask = torch.logical_not(attention_mask)
-        hs = torch.stack(encoder_outputs.hidden_states, -1)
-        aggregated_hidden_state, layer_token_attention = self.aggregator(hs, key_padding_mask)
+        hs = torch.stack(encoder_outputs.hidden_states, -1)[..., 1:] # shape (B, T, D, L)
+        ac = torch.stack(self.before_mlp_activations, -1)
+        aggregated_hidden_state, layer_token_attention = self.aggregator(hs, ac, key_padding_mask)
+        self.before_mlp_activations = [] # clear stored activations after use
 
         return BaseModelOutputWithPoolingAndCrossAttentions(
                 last_hidden_state = aggregated_hidden_state,
@@ -239,8 +249,10 @@ class LayerAdapter(torch.nn.Module):
         else:
             key_padding_mask = None
 
-        hs = torch.stack(encoder_outputs.hidden_states, -1) 
-        aggregated_hidden_state, layer_token_attention = self.aggregator(hs, key_padding_mask, self.need_weights)
+        hs = torch.stack(encoder_outputs.hidden_states, -1)[..., 1:] # shape (B, T, D, L)
+        ac = torch.stack(self.before_mlp_activations, -1) #  shape (B, T, D, L)
+        aggregated_hidden_state, layer_token_attention = self.aggregator(hs, ac, key_padding_mask, self.need_weights)
+        self.before_mlp_activations = [] # clear stored activations after use
 
         return BaseModelOutputWithPastAndCrossAttentions(
                     last_hidden_state=aggregated_hidden_state,
