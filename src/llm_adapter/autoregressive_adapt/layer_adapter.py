@@ -41,9 +41,9 @@ class LayerAdapter(torch.nn.Module):
                 dropout = dropout,
         )
 
-        self.inear_transforms = torch.nn.ModuleDict({
-            f"layer_{i}": torch.nn.Linear(input_size, hs) for i in range(nl)
-        })
+        #self.inear_transforms = torch.nn.ModuleDict({
+        #    f"layer_{i}": torch.nn.Linear(input_size, hs) for i in range(nl)
+        #})
 
         for param in self.encoder.parameters(): 
             param.requires_grad = False
@@ -111,16 +111,17 @@ class LayerAdapter(torch.nn.Module):
             Q = self.query_projection_layer(Q)
 
         # Keys/values are the layer representations for the SAME token only.
-        # Rearrange to: (B*T, L, D)
-        KV = inputs.permute(0, 1, 3, 2).contiguous().view(-1, inputs.size(-1), inputs.size(2))
+        # Rearrange to: (B*T, ??
+
+        KV = inputs[...,1:].permute(0, 1, 3, 2).contiguous().view(-1, inputs.size(-1)-1, inputs.size(2))
 
         K = KV
         if self.key_projection_layer is not None:
             K = self.key_projection_layer(K)
-        #V = KV
+        V = KV
 
         # Apply separate linear layer to each layer's representation before attention
-        V = torch.stack([self.inear_transforms[f"layer_{i}"](inputs[..., i]) for i in range(inputs.size(-1))], dim=-1).permute(0, 1, 3, 2).contiguous().view(-1, inputs.size(-1), inputs.size(2))
+        #V = torch.stack([self.inear_transforms[f"layer_{i}"](inputs[..., i]) for i in range(inputs.size(-1))], dim=-1).permute(0, 1, 3, 2).contiguous().view(-1, inputs.size(-1), inputs.size(2))
 
         # Query per token: (B*T, 1, D)
         Q_bt = Q.contiguous().view(-1, 1, Q.size(-1))
