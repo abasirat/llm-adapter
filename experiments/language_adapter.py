@@ -391,6 +391,8 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
                         if patience_counter >= early_stopping_patience:
                             print("Early stopping triggered. Ending training.")
                             break
+                        
+                    wandb.log({"best_val_loss": best_val_loss, "patience_counter": patience_counter})
 
                 
                 print(f"save parameters - progress {progress}")
