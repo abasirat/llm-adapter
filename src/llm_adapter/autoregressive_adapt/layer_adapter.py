@@ -100,7 +100,7 @@ class LayerAdapter(torch.nn.Module):
     def hook_before_each_mlp_in_bert(self):
         raise NotImplementedError("BERT-style models not implemented yet. GPT-style models only for now.")
         
-    def aggregator(self, hidden_states, pre_mlp_activations, key_padding_mask=None, need_weights=False):
+    def aggregator(self, hidden_states, pre_mlp_activations, key_padding_mask=None):
         """
         hidden_states: (B, T, D, L)
             B = batch
@@ -134,7 +134,7 @@ class LayerAdapter(torch.nn.Module):
         # Attend from each token to its own layer stack only.
         # No token-token mixing => causal by construction.
         attn_output, attn_weights = self.token_layer_attention(
-            Q_bt, K, V, need_weights=need_weights
+            Q_bt, K, V , need_weights=self.need_weights
         )
 
         r = attn_output.squeeze(1).view(inputs.size(0), inputs.size(1), -1)
@@ -248,7 +248,7 @@ class LayerAdapter(torch.nn.Module):
 
         hs = torch.stack(encoder_outputs.hidden_states, -1)[..., 1:] # shape (B, T, D, L)
         ac = torch.stack(self.before_mlp_activations, -1) #  shape (B, T, D, L)
-        aggregated_hidden_state, layer_token_attention = self.aggregator(hs, ac, key_padding_mask, self.need_weights)
+        aggregated_hidden_state, layer_token_attention = self.aggregator(hs, ac, key_padding_mask)
         self.before_mlp_activations = [] # clear stored activations after use
 
         return BaseModelOutputWithPastAndCrossAttentions(
