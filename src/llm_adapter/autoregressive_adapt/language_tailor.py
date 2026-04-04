@@ -18,8 +18,6 @@ class LanguageAdapter(torch.nn.Module):
         self.encoder = encoder
         self.config = self.encoder.config
         
-        tailor_block = self.encoder.h[-1]
-
         self.num_tailor_layers = num_tailor_layers
         self.tailor_blocks = torch.nn.ModuleList(
             [self.create_tailor_block() for i in range(num_tailor_layers)]
@@ -28,7 +26,23 @@ class LanguageAdapter(torch.nn.Module):
         self.output_dropout = torch.nn.Dropout(dropout)
     
     def create_tailor_block(self):
-        block = copy.deepcopy(self.encoder.h[-1])
+        def find_transformer_blocks(module):
+            # Case 1: module itself has `h`
+            if hasattr(module, "h") and isinstance(module.h, (list, torch.nn.ModuleList)):
+                return module.h
+
+            # Recursively search children
+            for child in module.children():
+                result = find_transformer_blocks(child)
+                if result is not None:
+                    return result
+
+            return None
+        
+        blocks = find_transformer_blocks(self.encoder)
+        if blocks is None:
+            raise ValueError("Could not find transformer blocks in the encoder")
+        block = copy.deepcopy(blocks[-1])
         for param in block.parameters():
             param.requires_grad = True
         return block
