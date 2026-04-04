@@ -17,6 +17,7 @@ class LayerAdapter(torch.nn.Module):
         input_size = encoder.config.hidden_size
         hs = hidden_size or input_size
         nh = num_heads or encoder.config.n_head
+        nl = encoder.config.n_layer + 1
 
         self.encoder = encoder
         self.config = encoder.config
@@ -39,6 +40,10 @@ class LayerAdapter(torch.nn.Module):
                 batch_first = True,
                 dropout = dropout,
         )
+
+        self.inear_transforms = torch.nn.ModuleDict({
+            f"layer_{i}": torch.nn.Linear(input_size, hs) for i in range(nl)
+        })
 
         for param in self.encoder.parameters(): 
             param.requires_grad = False
@@ -112,7 +117,10 @@ class LayerAdapter(torch.nn.Module):
         K = KV
         if self.key_projection_layer is not None:
             K = self.key_projection_layer(K)
-        V = KV
+        #V = KV
+
+        # Apply separate linear layer to each layer's representation before attention
+        V = torch.stack([self.inear_transforms[f"layer_{i}"](inputs[..., i]) for i in range(inputs.size(-1))], dim=-1).permute(0, 1, 3, 2).contiguous().view(-1, inputs.size(-1), inputs.size(2))
 
         # Query per token: (B*T, 1, D)
         Q_bt = Q.contiguous().view(-1, 1, Q.size(-1))
@@ -133,7 +141,7 @@ class LayerAdapter(torch.nn.Module):
                 attn_weights = attn_weights.masked_fill(key_padding_mask.unsqueeze(-1), 0.0)
         
         r = self.output_dropout(r)
-        
+
         return r, attn_weights
 
     def forward_bert(self,
