@@ -391,7 +391,7 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
                         if patience_counter >= early_stopping_patience:
                             print("Early stopping triggered. Ending training.")
                             break
-                        
+
                     wandb.log({"best_val_loss": best_val_loss, "patience_counter": patience_counter})
 
                 
@@ -554,8 +554,6 @@ if __name__ == '__main__':
             adapter_config = None
         elif adapter_type == 'layer_adapter':
             adapter_config = {
-                'hidden_size': None,
-                'num_heads': None,
                 'need_weights': False,
                 'dropout': 0.1,
             }

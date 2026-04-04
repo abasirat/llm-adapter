@@ -22,16 +22,13 @@ class LowRankLinear(torch.nn.Module):
 class LayerAdapter(torch.nn.Module):
     def __init__(self, 
             encoder, 
-            hidden_size=None,
-            num_heads=None,
             need_weights=False,
             dropout=0.1,
         ):
         super(LayerAdapter, self).__init__()
 
-        input_size = encoder.config.hidden_size
-        hs = hidden_size or input_size
-        nh = num_heads or encoder.config.n_head
+        hs = encoder.config.hidden_size
+        nh = encoder.config.n_head
         nl = encoder.config.n_layer
 
         self.encoder = encoder
@@ -67,7 +64,7 @@ class LayerAdapter(torch.nn.Module):
         self.output_dropout = torch.nn.Dropout(dropout)
 
         self.pre_mlp_linear_transforms = torch.nn.ModuleDict({
-            f"layer_{i}": LowRankLinear(input_size, hs, rank=8) for i in range(nl)
+            f"layer_{i}": LowRankLinear(hs, hs, rank=8) for i in range(nl)
         })
 
     def print_trainable_parameters(self):
