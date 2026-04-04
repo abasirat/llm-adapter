@@ -45,6 +45,7 @@ class LanguageAdapter(torch.nn.Module):
         block = copy.deepcopy(blocks[-1])
         for param in block.parameters():
             param.requires_grad = True
+            param.data.zero_()
         return block
         
     def print_trainable_parameters(self):
