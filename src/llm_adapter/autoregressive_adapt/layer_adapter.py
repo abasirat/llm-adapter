@@ -64,8 +64,8 @@ class LayerAdapter(torch.nn.Module):
         self.output_dropout = torch.nn.Dropout(dropout)
 
         self.pre_mlp_linear_transforms = torch.nn.ModuleDict({
-            #f"layer_{i}": LowRankLinear(hs, hs, rank=8) for i in range(nl)
-            f"layer_{i}": torch.nn.Linear(hs, hs) for i in range(nl)
+            f"layer_{i}": LowRankLinear(hs, hs, rank=8) for i in range(nl)
+            #f"layer_{i}": torch.nn.Linear(hs, hs) for i in range(nl)
         })
 
         self.adapter_scale = torch.nn.Parameter(torch.tensor(0.0))
