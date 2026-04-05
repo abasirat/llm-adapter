@@ -469,6 +469,9 @@ if __name__ == '__main__':
     parser.add_argument('--lora_dropout', type=float, default=0.1, help='LoRA dropout (default: 0.1)')
     parser.add_argument('--lora_target_modules', type=str, default='attn.c_proj', help='Comma-separated target modules for LoRA (default: attn.c_proj)')
 
+    # layer_adapter parameters
+    parser.add_argument('--num_aggregation_layers', type=int, default=None, help='Number of layers to aggregate in layer_adapter (default: None = all layers)')
+
 
     args = parser.parse_args()
 
@@ -518,6 +521,7 @@ if __name__ == '__main__':
     lora_alpha = args.lora_alpha
     lora_dropout = args.lora_dropout
     lora_target_modules = [m.strip() for m in args.lora_target_modules.split(',')]
+    num_aggregation_layers = args.num_aggregation_layers
 
 
     current_date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -543,6 +547,7 @@ if __name__ == '__main__':
         "lora_alpha": lora_alpha,
         "lora_dropout": lora_dropout,
         "lora_target_modules": lora_target_modules,
+        "num_aggregation_layers": num_aggregation_layers,
     })
 
     device = set_device()
@@ -559,6 +564,7 @@ if __name__ == '__main__':
             adapter_config = {
                 'need_weights': False,
                 'dropout': 0.1,
+                'num_aggregation_layers': num_aggregation_layers
             }
         elif adapter_type == 'lora':
             adapter_config = LoraConfig(

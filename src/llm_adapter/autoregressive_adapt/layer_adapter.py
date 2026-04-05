@@ -5,9 +5,9 @@ from typing import List, Optional, Tuple, Union
 from transformers.modeling_outputs import BaseModelOutputWithPoolingAndCrossAttentions, BaseModelOutputWithPastAndCrossAttentions
 
 class LowRankLinear(torch.nn.Module):
-    def __init__(self, in_features, out_features, rank, bias=True):
+    def __init__(self, in_features, out_features, rank, bias=True, init_std=0.02):
         super().__init__()
-        self.A = torch.nn.Parameter(torch.zeros(out_features, rank))
+        self.A = torch.nn.Parameter(torch.empty(out_features, rank))
         self.B = torch.nn.Parameter(torch.zeros(rank, in_features))
 
         if bias:
@@ -15,15 +15,18 @@ class LowRankLinear(torch.nn.Module):
         else:
             self.bias = None
 
+        torch.nn.init.normal_(self.A, mean=0.0, std=init_std)
+        # B already zero
+
     def forward(self, x):
         W = self.A @ self.B
         return torch.nn.functional.linear(x, W, self.bias)
-
 class LayerAdapter(torch.nn.Module):
     def __init__(self, 
             encoder, 
             need_weights=False,
             dropout=0.1,
+            num_aggregation_layers=None,
         ):
         super(LayerAdapter, self).__init__()
 
@@ -37,7 +40,8 @@ class LayerAdapter(torch.nn.Module):
         self.encoder.eval() # Set encoder to evaluation mode to disable dropout and other training-specific layers. It will speed up inference and reduce memory usage. We will enable grad only for the adapters and lm_head.
 
         self.need_weights = need_weights
-        
+        self.num_aggregation_layers = num_aggregation_layers
+
         self.token_layer_attention = torch.nn.MultiheadAttention(
                 embed_dim = hs, 
                 num_heads = nh, 
@@ -189,8 +193,13 @@ class LayerAdapter(torch.nn.Module):
             )
 
         key_padding_mask = torch.logical_not(attention_mask)
+        assert len(self.before_mlp_activations) == self.config.n_layer, \
+            f"Expected {self.config.n_layer} pre-MLP activations, got {len(self.before_mlp_activations)}"
         hs = torch.stack(encoder_outputs.hidden_states, -1)[..., 1:] # shape (B, T, D, L)
-        ac = torch.stack(self.before_mlp_activations, -1)
+        ac = torch.stack(self.before_mlp_activations, -1) #  shape (B, T, D, L)
+        if self.num_aggregation_layers is not None:
+            hs = hs[..., -self.num_aggregation_layers:]
+            ac = ac[..., -self.num_aggregation_layers:]
         aggregated_hidden_state, layer_token_attention = self.aggregator(hs, ac, key_padding_mask)
         self.before_mlp_activations = [] # clear stored activations after use
 
@@ -261,6 +270,9 @@ class LayerAdapter(torch.nn.Module):
         
         hs = torch.stack(encoder_outputs.hidden_states, -1)[..., 1:] # shape (B, T, D, L)
         ac = torch.stack(self.before_mlp_activations, -1) #  shape (B, T, D, L)
+        if self.num_aggregation_layers is not None:
+            hs = hs[..., -self.num_aggregation_layers:]
+            ac = ac[..., -self.num_aggregation_layers:]
         aggregated_hidden_state, layer_token_attention = self.aggregator(hs, ac, key_padding_mask)
         self.before_mlp_activations = [] # clear stored activations after use
 
