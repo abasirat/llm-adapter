@@ -19,34 +19,49 @@ class LanguageAdapter(torch.nn.Module):
         self.config = self.encoder.config
         
         self.num_tailor_layers = num_tailor_layers
+        transformer_blocks = self.find_transformer_blocks(self.encoder)
+        if transformer_blocks is None:
+            raise ValueError("Could not find transformer blocks in the encoder")
+        block = transformer_blocks[-1]
         self.tailor_blocks = torch.nn.ModuleList(
-            [self.create_tailor_block() for i in range(num_tailor_layers)]
+            [self.create_tailor_block(block) for i in range(num_tailor_layers)]
         )
 
         self.output_dropout = torch.nn.Dropout(dropout)
     
-    def create_tailor_block(self):
-        def find_transformer_blocks(module):
+    def find_transformer_blocks(self, module):
             # Case 1: module itself has `h`
             if hasattr(module, "h") and isinstance(module.h, (list, torch.nn.ModuleList)):
                 return module.h
 
             # Recursively search children
             for child in module.children():
-                result = find_transformer_blocks(child)
+                result = self.find_transformer_blocks(child)
                 if result is not None:
                     return result
 
             return None
-        
-        blocks = find_transformer_blocks(self.encoder)
-        if blocks is None:
-            raise ValueError("Could not find transformer blocks in the encoder")
-        block = copy.deepcopy(blocks[-1])
-        for param in block.parameters():
+
+    def create_tailor_block(self, block):
+        new_block = copy.deepcopy(block)
+
+        for m in new_block.modules():
+            if hasattr(m, "_forward_pre_hooks"):
+                m._forward_pre_hooks.clear()
+            if hasattr(m, "_forward_hooks"):
+                m._forward_hooks.clear()
+            if hasattr(m, "_backward_hooks"):
+                m._backward_hooks.clear()
+
+        for param in new_block.parameters():
             param.requires_grad = True
             param.data.zero_()
-        return block
+
+        new_block.is_tailor_block = True
+        if hasattr(new_block, "mlp"):
+            new_block.mlp.is_tailor_block = True
+
+        return new_block
         
     def print_trainable_parameters(self):
         """

@@ -89,12 +89,15 @@ class LayerAdapter(torch.nn.Module):
     def hook_before_each_mlp_in_gpt(self):
         def make_mlp_input_hook():
             def hook(module, inputs):
-                # inputs is a tuple; first element is the tensor entering the MLP
+                if getattr(module, "is_tailor_block", False):
+                    return
                 self.before_mlp_activations.append(inputs[0])
             return hook
 
         hooks = []
         for block in self.encoder.h:
+            if getattr(block, "is_tailor_block", False):
+                continue
             h = block.mlp.register_forward_pre_hook(make_mlp_input_hook())
             hooks.append(h)
         return hooks
@@ -252,6 +255,9 @@ class LayerAdapter(torch.nn.Module):
         else:
             key_padding_mask = None
 
+        assert len(self.before_mlp_activations) == self.config.n_layer, \
+            f"Expected {self.config.n_layer} pre-MLP activations, got {len(self.before_mlp_activations)}"
+        
         hs = torch.stack(encoder_outputs.hidden_states, -1)[..., 1:] # shape (B, T, D, L)
         ac = torch.stack(self.before_mlp_activations, -1) #  shape (B, T, D, L)
         aggregated_hidden_state, layer_token_attention = self.aggregator(hs, ac, key_padding_mask)
