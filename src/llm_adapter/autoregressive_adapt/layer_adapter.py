@@ -67,6 +67,8 @@ class LayerAdapter(torch.nn.Module):
             f"layer_{i}": LowRankLinear(hs, hs, rank=8) for i in range(nl)
         })
 
+        self.adapter_scale = torch.nn.Parameter(torch.tensor(0.0))
+
     def print_trainable_parameters(self):
         """
             Prints the number of trainable parameters in the model.
@@ -137,7 +139,11 @@ class LayerAdapter(torch.nn.Module):
             Q_bt, K, V , need_weights=self.need_weights
         )
 
-        r = attn_output.squeeze(1).view(inputs.size(0), inputs.size(1), -1)
+        #r = attn_output.squeeze(1).view(inputs.size(0), inputs.size(1), -1)
+        base = hidden_states[..., -1]
+        delta = attn_output.squeeze(1).view(inputs.size(0), inputs.size(1), -1)
+        r = base + self.adapter_scale * self.output_dropout(delta)
+
         if attn_weights is not None:
             attn_weights = attn_weights.squeeze(1).view(inputs.size(0), inputs.size(1), inputs.size(-1))
 
@@ -146,7 +152,7 @@ class LayerAdapter(torch.nn.Module):
             if attn_weights is not None:
                 attn_weights = attn_weights.masked_fill(key_padding_mask.unsqueeze(-1), 0.0)
         
-        r = self.output_dropout(r)
+        #r = self.output_dropout(r)
 
         return r, attn_weights
 

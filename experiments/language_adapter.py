@@ -374,6 +374,10 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
                 if scheduler is not None:
                     wandb.log({"learning_rate": scheduler.get_lr()})
                 
+                if adapter_type == 'layer_adapter':
+                        residual_scaler = model.transformer.encoder.adapter_scale.item()
+                        wandb.log({"residual_scaler": residual_scaler})
+                
                 acc_loss = []
 
             if i > 0 and i % 1000 == 0: 
@@ -393,7 +397,6 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
                             break
 
                     wandb.log({"best_val_loss": best_val_loss, "patience_counter": patience_counter})
-
                 
                 print(f"save parameters - progress {progress}")
                 save_model(raw_model, adapter_type, adapter_config, model_path+'-trace')
