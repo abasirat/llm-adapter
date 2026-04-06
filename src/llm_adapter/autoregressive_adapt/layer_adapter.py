@@ -21,6 +21,66 @@ class LowRankLinear(torch.nn.Module):
     def forward(self, x):
         W = self.A @ self.B
         return torch.nn.functional.linear(x, W, self.bias)
+
+class LowDimQKMultiHeadAttention(torch.nn.Module):
+    def __init__(self, input_dim, qk_dim, num_heads, v_dim=None, dropout=0.1, bias=True):
+        super().__init__()
+
+        assert qk_dim % num_heads == 0, "qk_dim must be divisible by num_heads"
+
+        self.input_dim = input_dim
+        self.qk_dim = qk_dim
+        self.num_heads = num_heads
+        self.head_qk_dim = qk_dim // num_heads
+        self.v_dim = v_dim if v_dim is not None else input_dim
+
+        assert self.v_dim % num_heads == 0, "v_dim must be divisible by num_heads"
+        self.head_v_dim = self.v_dim // num_heads
+
+        self.q_proj = torch.nn.Linear(input_dim, qk_dim, bias=bias)
+        self.k_proj = torch.nn.Linear(input_dim, qk_dim, bias=bias)
+        self.v_proj = torch.nn.Identity() if self.v_dim == input_dim else torch.nn.Linear(input_dim, self.v_dim, bias=bias)
+        self.out_proj = torch.nn.Identity() if self.v_dim == input_dim else torch.nn.Linear(self.v_dim, input_dim, bias=bias)
+
+        self.attn_dropout = torch.nn.Dropout(dropout)
+
+    def forward(self, Q, K, V, key_padding_mask=None, need_weights=False):
+        """
+        Q: (B, Tq, D)
+        K: (B, Tk, D)
+        V: (B, Tk, Dv_in)
+
+        Returns:
+            output: (B, Tq, input_dim)
+            attn_weights: (B, num_heads, Tq, Tk) or None
+        """
+        B, Tq, _ = Q.shape
+        Tk = K.size(1)
+
+        Q_low = self.q_proj(Q).view(B, Tq, self.num_heads, self.head_qk_dim).transpose(1, 2)
+        K_low = self.k_proj(K).view(B, Tk, self.num_heads, self.head_qk_dim).transpose(1, 2)
+        V_full = self.v_proj(V).view(B, Tk, self.num_heads, self.head_v_dim).transpose(1, 2)
+
+        # Q_low, K_low, V_full:
+        # (B, H, Tq, dq_head), (B, H, Tk, dq_head), (B, H, Tk, dv_head)
+
+        scores = torch.matmul(Q_low, K_low.transpose(-2, -1)) / torch.sqrt(torch.tensor(self.head_qk_dim, dtype=torch.float32))
+        # (B, H, Tq, Tk)
+
+        if key_padding_mask is not None:
+            scores = scores.masked_fill(key_padding_mask.unsqueeze(1).unsqueeze(2), float("-inf"))
+
+        attn_weights = torch.nn.functional.softmax(scores, dim=-1)
+        attn_weights = self.attn_dropout(attn_weights)
+
+        output = torch.matmul(attn_weights, V_full)  # (B, H, Tq, dv_head)
+        output = output.transpose(1, 2).contiguous().view(B, Tq, self.v_dim)
+        output = self.out_proj(output)  # (B, Tq, input_dim)
+
+        if not need_weights:
+            attn_weights = None
+
+        return output, attn_weights
 class LayerAdapter(torch.nn.Module):
     def __init__(self, 
             encoder, 
@@ -42,12 +102,21 @@ class LayerAdapter(torch.nn.Module):
         self.need_weights = need_weights
         self.num_aggregation_layers = num_aggregation_layers
 
-        self.token_layer_attention = torch.nn.MultiheadAttention(
-                embed_dim = hs, 
-                num_heads = nh, 
-                kdim = hs,
-                vdim = hs,
-                batch_first = True,
+        #self.val_projection = torch.nn.Linear(hs, 32)
+        #self.key_projection = torch.nn.Linear(hs, 32)
+
+        #self.token_layer_attention = torch.nn.MultiheadAttention(
+        #        embed_dim = hs, 
+        #        num_heads = 4, 
+        #        kdim = 32,
+        #        vdim = 32,
+        #        batch_first = True,
+        #        dropout = dropout,
+        #)
+        self.token_layer_attention = LowDimQKMultiHeadAttention(
+                input_dim = hs,
+                qk_dim = 128,
+                num_heads = 4,
                 dropout = dropout,
         )
 
@@ -160,7 +229,7 @@ class LayerAdapter(torch.nn.Module):
 
         # Query from the same token position, averaged over layers
         # Q: (B, T, D)
-        Q = hidden_states[..., -1] # use the top layer as query
+        Q = inputs[..., -1] # use the top layer as query
         # Keys/values are the layer representations for the SAME token only.
         # Rearrange to: (B*T, ??
         KV = inputs.permute(0, 1, 3, 2).contiguous().view(-1, inputs.size(-1), inputs.size(2))
@@ -171,10 +240,17 @@ class LayerAdapter(torch.nn.Module):
         # Query per token: (B*T, 1, D)
         Q_bt = Q.contiguous().view(-1, 1, Q.size(-1))
 
+        if key_padding_mask is not None:
+            # Attending over layers, not tokens, so token padding mask is for the query side.
+            # It should NOT be used as a key mask here because Tk = L, not sequence length.
+            layer_key_padding_mask = None
+        else:
+            layer_key_padding_mask = None
+
         # Attend from each token to its own layer stack only.
         # No token-token mixing => causal by construction.
         attn_output, attn_weights = self.token_layer_attention(
-            Q_bt, K, V , need_weights=self.need_weights
+            Q_bt, K, V, key_padding_mask=layer_key_padding_mask, need_weights=self.need_weights
         )
 
         #r = attn_output.squeeze(1).view(inputs.size(0), inputs.size(1), -1)
@@ -183,8 +259,11 @@ class LayerAdapter(torch.nn.Module):
         r = base + self.adapter_scale * self.output_dropout(delta)
 
         if attn_weights is not None:
-            attn_weights = attn_weights.squeeze(1).view(inputs.size(0), inputs.size(1), inputs.size(-1)) # shape (B, T, L)
-
+            # attn_weights: (B*T, H, 1, L)
+            attn_weights = attn_weights.mean(dim=1)  # (B*T, 1, L)
+            attn_weights = attn_weights.squeeze(1)   # (B*T, L)
+            attn_weights = attn_weights.view(inputs.size(0), inputs.size(1), inputs.size(-1))  # (B, T, L)
+            
         if key_padding_mask is not None:
             r = r.masked_fill(key_padding_mask.unsqueeze(-1), 0.0)
             if attn_weights is not None:
