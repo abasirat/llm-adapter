@@ -32,7 +32,7 @@ class LayerAdapter(torch.nn.Module):
 
         hs = encoder.config.hidden_size
         nh = encoder.config.n_head
-        nl = encoder.config.n_layer
+        nl = encoder.config.n_layer if num_aggregation_layers is None else num_aggregation_layers
 
         self.encoder = encoder
         self.config = encoder.config
@@ -74,6 +74,16 @@ class LayerAdapter(torch.nn.Module):
 
         self.adapter_scale = torch.nn.Parameter(torch.tensor(0.0))
 
+        self.layer_attention_metrics = {
+            "avg_attention_to_each_layer": torch.zeros(nl),
+            "std_attention_to_each_layer": torch.zeros(nl),
+            "entropy_of_layer_attention": torch.zeros(nl),
+            "num_aggregation_layers": nl,
+            "sum_attention_to_each_layer": torch.zeros(nl),
+            "sum_attention_squared_to_each_layer": torch.zeros(nl),
+            "num_tokens_aggregated": 0,
+        }
+
     def print_trainable_parameters(self):
         """
             Prints the number of trainable parameters in the model.
@@ -109,6 +119,26 @@ class LayerAdapter(torch.nn.Module):
     
     def hook_before_each_mlp_in_bert(self):
         raise NotImplementedError("BERT-style models not implemented yet. GPT-style models only for now.")
+    
+    def update_layer_attention_metrics(self, attn_weights):
+        # attn_weights shape: (B, T, L)
+        if attn_weights is None:
+            return
+        
+        attn_weights = attn_weights.detach().cpu()
+        self.layer_attention_metrics["sum_attention_to_each_layer"] += attn_weights.sum(dim=(0, 1))
+        self.layer_attention_metrics["sum_attention_squared_to_each_layer"] += (attn_weights ** 2).sum(dim=(0, 1))
+        self.layer_attention_metrics["num_aggregation_layers"] = attn_weights.size(-1)
+        self.layer_attention_metrics["num_tokens_aggregated"] += attn_weights.size(0) * attn_weights.size(1)
+
+        # Compute average and std attention to each layer
+        avg_attention = self.layer_attention_metrics["sum_attention_to_each_layer"] / self.layer_attention_metrics["num_tokens_aggregated"]
+        avg_attention_squared = self.layer_attention_metrics["sum_attention_squared_to_each_layer"] / self.layer_attention_metrics["num_tokens_aggregated"]
+        std_attention = torch.sqrt(avg_attention_squared - avg_attention ** 2 + 1e-8)
+        entropy_of_attention = -torch.sum(avg_attention * torch.log(avg_attention + 1e-8))
+        self.layer_attention_metrics["avg_attention_to_each_layer"] = avg_attention
+        self.layer_attention_metrics["std_attention_to_each_layer"] = std_attention
+        self.layer_attention_metrics["entropy_of_layer_attention"] = entropy_of_attention
         
     def aggregator(self, hidden_states, pre_mlp_activations, key_padding_mask=None):
         """
@@ -153,14 +183,12 @@ class LayerAdapter(torch.nn.Module):
         r = base + self.adapter_scale * self.output_dropout(delta)
 
         if attn_weights is not None:
-            attn_weights = attn_weights.squeeze(1).view(inputs.size(0), inputs.size(1), inputs.size(-1))
+            attn_weights = attn_weights.squeeze(1).view(inputs.size(0), inputs.size(1), inputs.size(-1)) # shape (B, T, L)
 
         if key_padding_mask is not None:
             r = r.masked_fill(key_padding_mask.unsqueeze(-1), 0.0)
             if attn_weights is not None:
                 attn_weights = attn_weights.masked_fill(key_padding_mask.unsqueeze(-1), 0.0)
-        
-        #r = self.output_dropout(r)
 
         return r, attn_weights
 
@@ -203,7 +231,10 @@ class LayerAdapter(torch.nn.Module):
         aggregated_hidden_state, layer_token_attention = self.aggregator(hs, ac, key_padding_mask)
         self.before_mlp_activations = [] # clear stored activations after use
 
-        return BaseModelOutputWithPoolingAndCrossAttentions(
+        if output_attentions is not None:
+            self.update_layer_attention_metrics(layer_token_attention)
+
+        outputs = BaseModelOutputWithPoolingAndCrossAttentions(
                 last_hidden_state = aggregated_hidden_state,
                 pooler_output = encoder_outputs.pooler_output,
                 past_key_values=encoder_outputs.past_key_values,
@@ -211,6 +242,8 @@ class LayerAdapter(torch.nn.Module):
                 attentions=encoder_outputs.attentions,
                 cross_attentions=encoder_outputs.cross_attentions,
         )
+
+        return outputs
 
     def forward_gpt(
         self,
@@ -276,10 +309,15 @@ class LayerAdapter(torch.nn.Module):
         aggregated_hidden_state, layer_token_attention = self.aggregator(hs, ac, key_padding_mask)
         self.before_mlp_activations = [] # clear stored activations after use
 
-        return BaseModelOutputWithPastAndCrossAttentions(
-                    last_hidden_state=aggregated_hidden_state,
-                    past_key_values=encoder_outputs.past_key_values,
-                    hidden_states=encoder_outputs.hidden_states if output_hidden_states else None,
-                    attentions=encoder_outputs.attentions,
-                    cross_attentions=encoder_outputs.cross_attentions,
-                )
+        if layer_token_attention is not None:
+            self.update_layer_attention_metrics(layer_token_attention)
+
+        outputs = BaseModelOutputWithPastAndCrossAttentions(
+            last_hidden_state=aggregated_hidden_state,
+            past_key_values=encoder_outputs.past_key_values,
+            hidden_states=encoder_outputs.hidden_states if output_hidden_states else None,
+            attentions=encoder_outputs.attentions,
+            cross_attentions=encoder_outputs.cross_attentions,
+        )
+
+        return outputs

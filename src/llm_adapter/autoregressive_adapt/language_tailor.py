@@ -130,17 +130,22 @@ class LanguageAdapter(torch.nn.Module):
             tailor_attention_mask = attention_mask.to(dtype=encoder_outputs.last_hidden_state.dtype)
             tailor_attention_mask = tailor_attention_mask[:, None, None, :]  # (B, 1, 1, T)
             tailor_attention_mask = (1.0 - tailor_attention_mask) * torch.finfo(encoder_outputs.last_hidden_state.dtype).min
+        
+        layer_token_attention = None
+        if hasattr(encoder_outputs, "layer_token_attention"):
+            layer_token_attention = encoder_outputs.layer_token_attention
 
         hs = self.tailor(
             encoder_outputs.last_hidden_state,
             attention_mask=tailor_attention_mask,
         )
 
-
-        return BaseModelOutputWithPastAndCrossAttentions(
+        outputs = BaseModelOutputWithPastAndCrossAttentions(
             last_hidden_state=hs,
             past_key_values=encoder_outputs.past_key_values,
             hidden_states=encoder_outputs.hidden_states if output_hidden_states else None,
             attentions=encoder_outputs.attentions,
             cross_attentions=encoder_outputs.cross_attentions,
         )
+        outputs.layer_token_attention = layer_token_attention
+        return outputs
