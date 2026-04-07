@@ -326,6 +326,7 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
     else:
         print("Early stopping disabled")
 
+    step = 0
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0.0
@@ -362,6 +363,8 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
             num_batches += 1
             acc_loss.append(batch_loss)
 
+            step = epoch * (dataloader_len or 0) + i
+
             progress_bar.update(progress if progress else 1)
             if i % 10 == 0:
                 running_loss = total_loss / num_batches
@@ -370,20 +373,20 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
                                             (f", LR: {scheduler.get_lr():.0e}" if scheduler else "") +
                                             (f", best val loss: {best_val_loss:.2f}, patience: {patience_counter}/{early_stopping_patience}"))
 
-                wandb.log({"batch_loss": avg_acc_loss, "running_loss": running_loss}, step=num_batches)
+                wandb.log({"batch_loss": avg_acc_loss, "running_loss": running_loss}, step=step)
                 if scheduler is not None:
-                    wandb.log({"learning_rate": scheduler.get_lr()}, step=num_batches)
+                    wandb.log({"learning_rate": scheduler.get_lr()}, step=step)
 
                 if adapter_type == 'layer_adapter':
                         residual_scaler = model.transformer.encoder.adapter_scale.item()
-                        wandb.log({"residual_scaler": residual_scaler}, step=num_batches)
+                        wandb.log({"residual_scaler": residual_scaler}, step=step)
                 
                         layer_token_attentions = model.transformer.encoder.layer_attention_metrics
                         avg_layer_attention = layer_token_attentions["avg_attention_to_each_layer"].cpu().numpy()
                         avg_log_dict = {
                             f"layer_attn/layer_{i}": avg_layer_attention[i] for i in range(len(avg_layer_attention))
                         }
-                        wandb.log(avg_log_dict, step=num_batches)
+                        wandb.log(avg_log_dict, step=step)
                         avg_layer_attention_data = [
                             [f"layer_{i}", avg_layer_attention[i]] for i in range(len(avg_layer_attention))
                         ]
@@ -397,10 +400,10 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
                                 "attention",
                                 title="Layer Attention Distribution"
                             )
-                            }, step=num_batches)
+                            }, step=step)
 
                         ent_layer_attention = layer_token_attentions["entropy_of_layer_attention"].cpu().item()
-                        wandb.log({"layer_attn/entropy": ent_layer_attention}, step=num_batches)
+                        wandb.log({"layer_attn/entropy": ent_layer_attention}, step=step)
                 
                 acc_loss = []
 
@@ -420,7 +423,7 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
                             print("Early stopping triggered. Ending training.")
                             break
 
-                    wandb.log({"best_val_loss": best_val_loss, "patience_counter": patience_counter}, step=num_batches)
+                    wandb.log({"best_val_loss": best_val_loss, "patience_counter": patience_counter}, step=step)
                 
                 print(f"save parameters - progress {progress}")
                 save_model(raw_model, adapter_type, adapter_config, model_path+'-trace')
@@ -428,7 +431,7 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
         progress_bar.close()
 
         avg_loss = total_loss / max(num_batches, 1)
-        wandb.log({"epoch": epoch + 1, "avg_loss": avg_loss}, step=num_batches)
+        wandb.log({"epoch": epoch + 1, "avg_loss": avg_loss}, step=step)
         print(f"Epoch {epoch + 1}/{num_epochs}, Train Loss: {avg_loss:.4f}")
 
         if patience_counter >= early_stopping_patience:
