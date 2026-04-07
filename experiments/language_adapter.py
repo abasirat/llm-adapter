@@ -304,7 +304,7 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
         print("LR scheduler disabled (unknown dataloader length)")
 
     device_type = device.type
-    use_amp = False # device_type == "cuda" # Currently disabling AMP to avoid OOM issues, can be re-enabled when stable
+    use_amp = device_type == "cuda" 
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     # Compile the model for faster forward passes
