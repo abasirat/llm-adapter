@@ -32,13 +32,14 @@ def set_device(device_name=None):
     
     # The following settings are due to some CUDA instability on A100
     if device == "cuda":
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32 = False
-        torch.set_float32_matmul_precision("highest")
+        #torch.backends.cuda.matmul.allow_tf32 = False
+        #torch.backends.cudnn.allow_tf32 = False
+        #torch.set_float32_matmul_precision("highest")
 
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-        torch.use_deterministic_algorithms(True)
+        #torch.backends.cudnn.deterministic = True
+        #torch.backends.cudnn.benchmark = False
+        #torch.use_deterministic_algorithms(True)
+        pass
 
     return torch.device(device)
 
