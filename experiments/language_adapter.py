@@ -308,12 +308,13 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     # Compile the model for faster forward passes
-    try:
-        model = torch.compile(raw_model, backend="auto", mode="default")
-        print(f"Model compiled successfully on {device_type}")
-    except Exception as e:
-        print(f"torch.compile() not available or failed: {e}. Training with standard model.")
-        model = raw_model
+    #try:
+    #    model = torch.compile(raw_model, backend="auto", mode="default")
+    #    print(f"Model compiled successfully on {device_type}")
+    #except Exception as e:
+    #    print(f"torch.compile() not available or failed: {e}. Training with standard model.")
+    #    model = raw_model
+    model = raw_model
 
     # Early stopping setup
     best_val_loss = float('inf')
