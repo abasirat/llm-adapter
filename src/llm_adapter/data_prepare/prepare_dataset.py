@@ -287,7 +287,7 @@ def main():
     parser.add_argument(
         "--split",
         type=str,
-        default="train",
+        default=None,
         help="Dataset split to use (default: train).",
     )
     parser.add_argument(
@@ -408,6 +408,7 @@ def main():
             " | streaming" if args.streaming else "",
         )
 
+        
         load_kwargs = dict(split=args.split, streaming=args.streaming)
         if args.dataset_config:
             dataset = load_dataset(args.dataset_name, args.dataset_config, **load_kwargs)
