@@ -146,7 +146,7 @@ class LayerAdapter(torch.nn.Module):
             #f"layer_{i}": torch.nn.Linear(hs, hs) for i in range(self.config.n_layer, self.config.n_layer - nl, -1)
         })
 
-        self.adapter_scale = -0.07 #torch.nn.Parameter(torch.tensor(0.0))
+        self.adapter_scale = torch.tensor(-0.07) #torch.nn.Parameter(torch.tensor(0.0))
 
         self.layer_attention_metrics = {
             "avg_attention_to_each_layer": torch.zeros(nl),
