@@ -298,7 +298,7 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
     if total_steps is not None:
         warmup_steps = int(.1 * total_steps)
         scheduler = WarmUpCosineDecayScheduler(optimizer, warmup_steps, total_steps, learning_rate)
-        print(f"LR scheduler set up with {warmup_steps} warmup steps and {total_steps} total steps")
+        print(f"LR scheduler set up with {warmup_steps} warmup steps and {total_steps} total steps. Max LR: {learning_rate:.2e}.")
     else:
         scheduler = None
         print("LR scheduler disabled (unknown dataloader length)")
@@ -411,7 +411,7 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
                 # Early stopping check (training-based, only if no validation set)
                 if val_dataloader is not None and early_stopping_patience > 0:
                     avg_val_loss, _ = validate(model, val_dataloader, device, device_type, use_amp)
-                    wandb.log({"val_loss": avg_val_loss}, step=num_batches)
+                    wandb.log({"val_loss": avg_val_loss}, step=step)
                     print(f"Val Loss: {avg_val_loss:.4f}")
                     if avg_val_loss < best_val_loss - early_stopping_min_delta:
                         best_val_loss = avg_val_loss
@@ -666,7 +666,7 @@ if __name__ == '__main__':
                 print(f"Adjusting context size for prefix embeddings: original {context_size}, prefix {prefix_length}")
                 context_size -= prefix_length
                 print(f"New context size: {context_size}")
-                
+
         full_dataset = TokenBinDataset(
             bin_path=args.token_bin,
             context_size=context_size,
