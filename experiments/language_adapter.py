@@ -499,6 +499,8 @@ if __name__ == '__main__':
     # layer_adapter parameters
     parser.add_argument('--num_aggregation_layers', type=int, default=None, help='Number of layers to aggregate in layer_adapter (default: None = all layers)')
 
+    # prefix embedding parameters
+    parser.add_argument('--prefix_length', type=int, default=8, help='Length of prefix embeddings for layer_adapter (default: 8)')
 
     args = parser.parse_args()
 
@@ -549,7 +551,7 @@ if __name__ == '__main__':
     lora_dropout = args.lora_dropout
     lora_target_modules = [m.strip() for m in args.lora_target_modules.split(',')]
     num_aggregation_layers = args.num_aggregation_layers
-
+    prefix_length = args.prefix_length
 
     current_date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     
@@ -591,7 +593,8 @@ if __name__ == '__main__':
             adapter_config = {
                 'need_weights': True,
                 'dropout': 0.1,
-                'num_aggregation_layers': num_aggregation_layers
+                'num_aggregation_layers': num_aggregation_layers,
+                'prefix_length': prefix_length
             }
         elif adapter_type == 'lora':
             adapter_config = LoraConfig(
@@ -657,6 +660,13 @@ if __name__ == '__main__':
     # Create training dataset
     if args.token_bin is not None:
         print(f"Creating training dataset from pre-tokenized binary: {args.token_bin}")
+        if prefix_length > 0 and adapter_type == 'layer_adapter':
+            if context_size + prefix_length > model.config.n_positions:
+                print(f"Context size + prefix length ({context_size + prefix_length}) exceeds model's maximum position embeddings ({model.config.n_positions})")
+                print(f"Adjusting context size for prefix embeddings: original {context_size}, prefix {prefix_length}")
+                context_size -= prefix_length
+                print(f"New context size: {context_size}")
+                
         full_dataset = TokenBinDataset(
             bin_path=args.token_bin,
             context_size=context_size,

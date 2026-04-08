@@ -64,7 +64,8 @@ class LowDimQKMultiHeadAttention(torch.nn.Module):
         # Q_low, K_low, V_full:
         # (B, H, Tq, dq_head), (B, H, Tk, dq_head), (B, H, Tk, dv_head)
 
-        scores = torch.matmul(Q_low, K_low.transpose(-2, -1)) / torch.sqrt(torch.tensor(self.head_qk_dim, dtype=torch.float32))
+        scale = self.head_qk_dim ** -0.5
+        scores = torch.matmul(Q_low, K_low.transpose(-2, -1)) * scale
         # (B, H, Tq, Tk)
 
         if key_padding_mask is not None:
@@ -87,12 +88,16 @@ class LayerAdapter(torch.nn.Module):
             need_weights=False,
             dropout=0.1,
             num_aggregation_layers=None,
+            prefix_length=10,
         ):
         super(LayerAdapter, self).__init__()
 
         hs = encoder.config.hidden_size
         nh = encoder.config.n_head
         nl = encoder.config.n_layer if num_aggregation_layers is None else num_aggregation_layers
+
+        self.n_layer = nl
+        self.prefix_length = prefix_length
 
         self.encoder = encoder
         self.config = encoder.config
@@ -153,6 +158,14 @@ class LayerAdapter(torch.nn.Module):
             "num_tokens_aggregated": 0,
         }
 
+        # Prefix tokens for prefix-tuning style adaptation. Shape (prefix_length, hidden_size)
+        if prefix_length > 0:
+            self.prefix_embeddings = torch.nn.Parameter(
+                torch.randn(prefix_length, hs) * 0.02
+            )  # (P, D)
+        else:
+            self.prefix_embeddings = None
+
     def print_trainable_parameters(self):
         """
             Prints the number of trainable parameters in the model.
@@ -188,6 +201,49 @@ class LayerAdapter(torch.nn.Module):
     
     def hook_before_each_mlp_in_bert(self):
         raise NotImplementedError("BERT-style models not implemented yet. GPT-style models only for now.")
+    
+    def get_prefix_states(self, batch_size):
+        """Generate prefix key-value states for all layers"""
+        prefix_states = []
+        
+        for layer_idx in range(self.n_layer):
+            # Get prefix embeddings for current layer
+            prefix_k = self.prefix_embeddings[layer_idx, 0]  # Key prefix
+            prefix_v = self.prefix_embeddings[layer_idx, 1]  # Value prefix
+            
+            # Expand for batch size
+            prefix_k = prefix_k.unsqueeze(0).expand(batch_size, -1, -1, -1)
+            prefix_v = prefix_v.unsqueeze(0).expand(batch_size, -1, -1, -1)
+            
+            prefix_states.append((prefix_k, prefix_v))
+            
+        return prefix_states
+
+    def prepend_prefix_embeddings(self, input_ids=None, inputs_embeds=None, attention_mask=None):
+        if self.prefix_embeddings is None:
+            return input_ids, inputs_embeds, attention_mask, 0
+
+        if inputs_embeds is None:
+            if input_ids is None:
+                raise ValueError("Either input_ids or inputs_embeds must be provided.")
+            inputs_embeds = self.encoder.get_input_embeddings()(input_ids)
+
+        B = inputs_embeds.size(0)
+        P = self.prefix_length
+        D = inputs_embeds.size(-1)
+
+        prefix = self.prefix_embeddings.unsqueeze(0).expand(B, -1, -1)  # (B, P, D)
+        inputs_embeds = torch.cat([prefix, inputs_embeds], dim=1)       # (B, P+T, D)
+
+        if attention_mask is None:
+            attention_mask = torch.ones(
+                B, inputs_embeds.size(1), device=inputs_embeds.device, dtype=torch.long
+            )
+        else:
+            prefix_mask = torch.ones(B, P, device=attention_mask.device, dtype=attention_mask.dtype)
+            attention_mask = torch.cat([prefix_mask, attention_mask], dim=1)
+
+        return None, inputs_embeds, attention_mask, P
     
     def update_layer_attention_metrics(self, attn_weights):
         # attn_weights shape: (B, T, L)
@@ -263,7 +319,7 @@ class LayerAdapter(torch.nn.Module):
             attn_weights = attn_weights.mean(dim=1)  # (B*T, 1, L)
             attn_weights = attn_weights.squeeze(1)   # (B*T, L)
             attn_weights = attn_weights.view(inputs.size(0), inputs.size(1), inputs.size(-1))  # (B, T, L)
-            
+
         if key_padding_mask is not None:
             r = r.masked_fill(key_padding_mask.unsqueeze(-1), 0.0)
             if attn_weights is not None:
@@ -323,7 +379,7 @@ class LayerAdapter(torch.nn.Module):
         )
 
         return outputs
-
+    
     def forward_gpt(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -341,52 +397,55 @@ class LayerAdapter(torch.nn.Module):
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
     ) -> Union[Tuple, BaseModelOutputWithPastAndCrossAttentions]:
+
+        original_attention_mask = attention_mask
         
+        input_ids, inputs_embeds, attention_mask, prefix_len = self.prepend_prefix_embeddings(
+            input_ids=input_ids,
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+        )
+
         with torch.no_grad():
-            encoder_outputs =  self.encoder(
-                    input_ids,
-                    past_key_values=past_key_values,
-                    attention_mask=attention_mask,
-                    token_type_ids=token_type_ids,
-                    position_ids=position_ids,
-                    head_mask=head_mask,
-                    inputs_embeds=inputs_embeds,
-                    encoder_hidden_states=encoder_hidden_states,
-                    encoder_attention_mask=encoder_attention_mask,
-                    use_cache=use_cache,
-                    output_attentions=output_attentions,
-                    output_hidden_states=True,
-                    return_dict=return_dict,
-                    cache_position=cache_position,
+            encoder_outputs = self.encoder(
+                input_ids=input_ids,                  # now None if prefix was added
+                past_key_values=past_key_values,      
+                attention_mask=attention_mask,
+                token_type_ids=token_type_ids,
+                position_ids=position_ids,
+                head_mask=head_mask,
+                inputs_embeds=inputs_embeds,
+                encoder_hidden_states=encoder_hidden_states,
+                encoder_attention_mask=encoder_attention_mask,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                output_hidden_states=True,
+                return_dict=return_dict,
+                cache_position=cache_position,
             )
-
-        ## do not pad for new generated input if only decoder
-        #if self.encoder.config.is_encoder_decoder is False:
-        #    key_padding_mask = None
-        #else:
-        #    key_padding_mask = torch.logical_not(attention_mask)
-
-        # Keep padding mask when present, even for GPT-style models.
-        #if attention_mask is not None:
-        #    key_padding_mask = torch.logical_not(attention_mask.bool())
-        #else:
-        #    key_padding_mask = None
-
-        if attention_mask is not None:
-            key_padding_mask = ~attention_mask.bool()
-        else:
-            key_padding_mask = None
 
         assert len(self.before_mlp_activations) == self.config.n_layer, \
             f"Expected {self.config.n_layer} pre-MLP activations, got {len(self.before_mlp_activations)}"
-        
-        hs = torch.stack(encoder_outputs.hidden_states, -1)[..., 1:] # shape (B, T, D, L)
-        ac = torch.stack(self.before_mlp_activations, -1) #  shape (B, T, D, L)
+
+        # hidden states now include prefix positions, so remove them before aggregation
+        hs = torch.stack(encoder_outputs.hidden_states, -1)[..., 1:]   # (B, T+P, D, L)
+        ac = torch.stack(self.before_mlp_activations, -1)              # (B, T+P, D, L)
+
+        if prefix_len > 0:
+            hs = hs[:, prefix_len:, :, :]
+            ac = ac[:, prefix_len:, :, :]
+
         if self.num_aggregation_layers is not None:
             hs = hs[..., -self.num_aggregation_layers:]
             ac = ac[..., -self.num_aggregation_layers:]
+
+        if original_attention_mask is not None:
+            key_padding_mask = ~original_attention_mask.bool()
+        else:
+            key_padding_mask = None
+
         aggregated_hidden_state, layer_token_attention = self.aggregator(hs, ac, key_padding_mask)
-        self.before_mlp_activations = [] # clear stored activations after use
+        self.before_mlp_activations = []
 
         if layer_token_attention is not None:
             self.update_layer_attention_metrics(layer_token_attention)
