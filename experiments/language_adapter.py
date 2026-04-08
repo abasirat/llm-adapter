@@ -341,9 +341,9 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
 
             optimizer.zero_grad(set_to_none=True)
 
-            with torch.autocast(device_type=device_type, dtype=torch.float16, enabled=use_amp):
-                outputs = model(**batch)
-                loss = outputs.loss
+            #with torch.autocast(device_type=device_type, dtype=torch.float16, enabled=use_amp):
+            outputs = model(**batch)
+            loss = outputs.loss
 
             if use_amp:
                 scaler.scale(loss).backward()
