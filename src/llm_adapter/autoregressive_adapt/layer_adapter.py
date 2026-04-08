@@ -142,8 +142,8 @@ class LayerAdapter(torch.nn.Module):
         self.output_dropout = torch.nn.Dropout(dropout)
 
         self.pre_mlp_linear_transforms = torch.nn.ModuleDict({
-            f"layer_{self.config.n_layer - 1 - i}": LowRankLinear(hs, hs, rank=8) for i in range(nl)
-            #f"layer_{self.config.n_layer - 1 - i}": torch.nn.Linear(hs, hs) for i in range(nl)
+            f"layer_{i}": LowRankLinear(hs, hs, rank=8) for i in range(self.config.n_layer, self.config.n_layer - nl, -1)
+            #f"layer_{i}": torch.nn.Linear(hs, hs) for i in range(self.config.n_layer, self.config.n_layer - nl, -1)
         })
 
         self.adapter_scale = torch.nn.Parameter(torch.tensor(0.0))
@@ -280,7 +280,8 @@ class LayerAdapter(torch.nn.Module):
             w:   (B, T, L)      per-token layer weights
         """
 
-        pre_mlps = torch.stack([self.pre_mlp_linear_transforms[f"layer_{self.config.n_layer - 1 - i}"](pre_mlp_activations[..., i]) for i in range(pre_mlp_activations.size(-1))], dim=-1) # shape (B, T, D, L)
+        nl = pre_mlp_activations.size(-1)
+        pre_mlps = torch.stack([self.pre_mlp_linear_transforms[f"layer_{i}"](pre_mlp_activations[..., i]) for i in range(self.config.n_layer, self.config.n_layer - nl, -1)], dim=-1) # shape (B, T, D, L)
         inputs = hidden_states + pre_mlps # shape (B, T, D, L)
 
         # Query from the same token position, averaged over layers
