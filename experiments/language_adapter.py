@@ -383,12 +383,14 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
                 
                         layer_token_attentions = model.transformer.encoder.layer_attention_metrics
                         avg_layer_attention = layer_token_attentions["avg_attention_to_each_layer"].cpu().numpy()
+                        n_layer = model.config.n_layer
+                        nl = len(avg_layer_attention)
                         avg_log_dict = {
-                            f"layer_attn/layer_{i}": avg_layer_attention[i] for i in range(len(avg_layer_attention))
+                            f"layer_attn/layer_{i}": avg_layer_attention[i - n_layer + nl - 1] for i in range(n_layer, n_layer - nl, -1)
                         }
                         wandb.log(avg_log_dict, step=step)
                         avg_layer_attention_data = [
-                            [f"layer_{i}", avg_layer_attention[i]] for i in range(len(avg_layer_attention))
+                            [f"layer_{i}", avg_layer_attention[i - n_layer + nl - 1]] for i in range(n_layer, n_layer - nl, -1)
                         ]
 
                         avg_layer_attention_table = wandb.Table(data=avg_layer_attention_data, columns=["layer", "attention"])
