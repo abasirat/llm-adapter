@@ -304,7 +304,7 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
         print("LR scheduler disabled (unknown dataloader length)")
 
     device_type = device.type
-    use_amp = device_type == "cuda" 
+    use_amp = False # device_type == "cuda" # AMP can cause instability for some models, so we disable it for now.  Can be re-enabled if desired.
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     # Compile the model for faster forward passes
@@ -366,7 +366,7 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
             step = epoch * (dataloader_len or 0) + i
 
             progress_bar.update(progress if progress else 1)
-            if i % 10 == 0:
+            if i % 100 == 0:
                 running_loss = total_loss / num_batches
                 avg_acc_loss = sum(acc_loss) / len(acc_loss) if acc_loss else 0.0
                 progress_bar.set_description((f"running loss: {running_loss:.2f}, batch loss: {avg_acc_loss:.2f}") +
