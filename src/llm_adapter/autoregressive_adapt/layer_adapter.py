@@ -281,7 +281,7 @@ class LayerAdapter(torch.nn.Module):
         """
 
         nl = pre_mlp_activations.size(-1)
-        pre_mlps = torch.stack([self.pre_mlp_linear_transforms[f"layer_{i}"](pre_mlp_activations[..., i]) for i in range(self.config.n_layer, self.config.n_layer - nl, -1)], dim=-1) # shape (B, T, D, L)
+        pre_mlps = torch.stack([self.pre_mlp_linear_transforms[f"layer_{i}"](pre_mlp_activations[..., i-nl-1]) for i in range(self.config.n_layer, self.config.n_layer - nl, -1)], dim=-1) # shape (B, T, D, L)
         inputs = hidden_states + pre_mlps # shape (B, T, D, L)
 
         # Query from the same token position, averaged over layers
