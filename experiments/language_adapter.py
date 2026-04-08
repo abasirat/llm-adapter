@@ -16,6 +16,8 @@ import wandb
 from datetime import datetime
 from llm_adapter import setup_model, save_model
 from peft import LoraConfig, TaskType
+import random
+
 
 def set_device(device_name=None):
     if device_name:
@@ -27,8 +29,24 @@ def set_device(device_name=None):
         device = "mps"
     else:
         device = "cpu"
+    
+    # The following settings are due to some CUDA instability on A100
+    if device == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        torch.set_float32_matmul_precision("highest")
+
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        torch.use_deterministic_algorithms(True)
 
     return torch.device(device)
+
+def set_seed(seed = 42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 class ChunkIterableDataset(IterableDataset):
     def __init__(self, corpus_path=None, tokenizer=None, chunk_size:int = 1024, context_size:int = 1024, dataset=None, text_column:str = "text"):
@@ -479,6 +497,7 @@ if __name__ == '__main__':
     parser.add_argument('--token_bin', type=str, default=None,
                         help='Path to a pre-tokenized .bin file produced by data/prepare_dataset.py '
                              '(use this OR --train_data / --dataset_name, not in combination)')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility (default: 42)')
 
     # Optional parameters
     parser.add_argument('--chunk_size', type=int, default=4*1024, help='Chunk size for data loading (default: 4096)')
@@ -513,6 +532,9 @@ if __name__ == '__main__':
         parser.error("One of --train_data, --dataset_name, or --token_bin must be provided")
     if sources_provided > 1:
         parser.error("Only one of --train_data, --dataset_name, or --token_bin should be provided, not multiple")
+
+    # Set random seed for reproducibility
+    set_seed(args.seed)
 
     # WECHSEL args are only needed when the tokenizer must be trained
     # (no pre-tokenized binary and not resuming from a checkpoint)
