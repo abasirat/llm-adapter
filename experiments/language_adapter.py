@@ -267,9 +267,9 @@ def validate(model, val_dataloader, device, device_type, use_amp):
     with torch.no_grad():
         for val_batch, _ in tqdm(val_dataloader, desc="Validating"):
             val_batch = {k: v.to(device) for k, v in val_batch.items()}
-            with torch.autocast(device_type=device_type, dtype=torch.float16, enabled=use_amp):
-                outputs = model(**val_batch)
-                loss = outputs.loss
+            #with torch.autocast(device_type=device_type, dtype=torch.float16, enabled=use_amp):
+            outputs = model(**val_batch)
+            loss = outputs.loss
             val_loss += loss.detach().float().item()
             num_batches += 1
 
