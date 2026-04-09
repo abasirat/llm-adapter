@@ -23,7 +23,7 @@ class LowRankLinear(torch.nn.Module):
         return torch.nn.functional.linear(x, W, self.bias)
 
 class LowDimQKMultiHeadAttention(torch.nn.Module):
-    def __init__(self, input_dim, qk_dim, num_heads, v_dim=None, dropout=0.1, bias=True):
+    def __init__(self, input_dim, qk_dim, num_heads, v_dim=None, dropout=0.1, bias=True, temperature=1.0):
         super().__init__()
 
         assert qk_dim % num_heads == 0, "qk_dim must be divisible by num_heads"
@@ -43,6 +43,8 @@ class LowDimQKMultiHeadAttention(torch.nn.Module):
         self.out_proj = torch.nn.Identity() if self.v_dim == input_dim else torch.nn.Linear(self.v_dim, input_dim, bias=bias)
 
         self.attn_dropout = torch.nn.Dropout(dropout)
+
+        self.temperature = temperature
 
     def forward(self, Q, K, V, key_padding_mask=None, need_weights=False):
         """
@@ -64,8 +66,9 @@ class LowDimQKMultiHeadAttention(torch.nn.Module):
         # Q_low, K_low, V_full:
         # (B, H, Tq, dq_head), (B, H, Tk, dq_head), (B, H, Tk, dv_head)
 
-        scale = self.head_qk_dim ** -0.5
-        scores = torch.matmul(Q_low, K_low.transpose(-2, -1)) * scale
+        scale = self.head_qk_dim ** 0.5
+        scores = torch.matmul(Q_low, K_low.transpose(-2, -1)) / scale / self.temperature  # (B, H, Tq, Tk)
+        scores = scores.masked_fill(torch.isnan(scores), float("-inf"))  # Handle NaNs from zero vectors in Q/K 
         # (B, H, Tq, Tk)
 
         if key_padding_mask is not None:
@@ -120,9 +123,10 @@ class LayerAdapter(torch.nn.Module):
         #)
         self.token_layer_attention = LowDimQKMultiHeadAttention(
                 input_dim = hs,
-                qk_dim = 128,
-                num_heads = 4,
+                qk_dim = 32,
+                num_heads = 2,
                 dropout = dropout,
+                temperature = 2.0,
         )
 
         for param in self.encoder.parameters(): 
@@ -139,6 +143,7 @@ class LayerAdapter(torch.nn.Module):
             print("this implementation works only with standard gpt and bert families from huggingface")
             raise NotImplementedError
         
+        self.input_dropout = torch.nn.Dropout(dropout)
         self.output_dropout = torch.nn.Dropout(dropout)
 
         self.pre_mlp_linear_transforms = torch.nn.ModuleDict({
@@ -165,6 +170,8 @@ class LayerAdapter(torch.nn.Module):
             )  # (P, D)
         else:
             self.prefix_embeddings = None
+        
+        self.layer_norm = torch.nn.LayerNorm(hs)
 
     def print_trainable_parameters(self):
         """
@@ -283,6 +290,7 @@ class LayerAdapter(torch.nn.Module):
         nl = pre_mlp_activations.size(-1)
         pre_mlps = torch.stack([self.pre_mlp_linear_transforms[f"layer_{i}"](pre_mlp_activations[..., i - self.config.n_layer + nl - 1]) for i in range(self.config.n_layer, self.config.n_layer - nl, -1)], dim=-1) # shape (B, T, D, L)
         inputs = hidden_states + pre_mlps # shape (B, T, D, L)
+        inputs = self.input_dropout(inputs)
 
         # Query from the same token position, averaged over layers
         # Q: (B, T, D)
@@ -296,6 +304,10 @@ class LayerAdapter(torch.nn.Module):
 
         # Query per token: (B*T, 1, D)
         Q_bt = Q.contiguous().view(-1, 1, Q.size(-1))
+
+        Q_bt = self.layer_norm(Q_bt)
+        K = self.layer_norm(K)
+        V = self.layer_norm(V)
 
         if key_padding_mask is not None:
             # Attending over layers, not tokens, so token padding mask is for the query side.
