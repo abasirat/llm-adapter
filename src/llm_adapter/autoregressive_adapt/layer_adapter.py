@@ -124,7 +124,7 @@ class LayerAdapter(torch.nn.Module):
         self.token_layer_attention = LowDimQKMultiHeadAttention(
                 input_dim = hs,
                 qk_dim = 32,
-                num_heads = 2,
+                num_heads = 4,
                 dropout = dropout,
                 temperature = 2.0,
         )
@@ -412,12 +412,29 @@ class LayerAdapter(torch.nn.Module):
     ) -> Union[Tuple, BaseModelOutputWithPastAndCrossAttentions]:
 
         original_attention_mask = attention_mask
-        
-        input_ids, inputs_embeds, attention_mask, prefix_len = self.prepend_prefix_embeddings(
-            input_ids=input_ids,
-            inputs_embeds=inputs_embeds,
-            attention_mask=attention_mask,
+
+        prefix_len = 0
+        use_prefix = self.prefix_length > 0 and (
+            past_key_values is None or (
+                hasattr(past_key_values, "get_seq_length") and past_key_values.get_seq_length() == 0
+            )
         )
+
+        if use_prefix:
+            input_ids, inputs_embeds, attention_mask, prefix_len = self.prepend_prefix_embeddings(
+                input_ids=input_ids,
+                inputs_embeds=inputs_embeds,
+                attention_mask=attention_mask,
+            )
+
+            # position_ids coming from generate() are for the unprefixed sequence,
+            # so rebuild them for the prefixed sequence.
+            B, T_total, _ = inputs_embeds.shape
+            position_ids = torch.arange(
+                T_total,
+                device=inputs_embeds.device,
+                dtype=torch.long,
+            ).unsqueeze(0).expand(B, -1)
 
         with torch.no_grad():
             encoder_outputs = self.encoder(
