@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from llm_adapter import load_model
 from tqdm import tqdm
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
 def main():
     parser = argparse.ArgumentParser(description='Generate text using a trained language model')
@@ -59,7 +60,12 @@ def main():
 
     # Load model and tokenizer
     print(f"Loading model from {args.model_path}")
-    model, tokenizer, adapter_config = load_model(args.model_path, tokenizer_path=args.tokenizer_path)
+    if args.model_path in ["gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl"]:
+        model_name = args.model_path
+        model = AutoModelForCausalLM.from_pretrained(model_name)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side='left')
+    else:
+        model, tokenizer, adapter_config = load_model(args.model_path, tokenizer_path=args.tokenizer_path)
     model.to(device)
     model.eval()
 
