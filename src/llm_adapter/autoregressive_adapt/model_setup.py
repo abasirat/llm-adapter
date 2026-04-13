@@ -7,7 +7,14 @@ from wechsel import WECHSEL, load_embeddings
 import os
 import pdb
 
-def setup_model(model_name='gpt2', adapter_type='none', adapter_config=None, num_tailor_layers=0, wechsel_config=None, path_to_tokenizer=None):
+def setup_model(model_name='gpt2', 
+                adapter_type='none', 
+                adapter_config=None, 
+                num_tailor_layers=0, 
+                wechsel_config=None, 
+                path_to_tokenizer=None,
+                freeze_lm_head=False
+            ):
     
     if path_to_tokenizer is not None and os.path.exists(path_to_tokenizer):
         tokenizer = AutoTokenizer.from_pretrained(path_to_tokenizer, padding_side='left')
@@ -79,7 +86,7 @@ def setup_model(model_name='gpt2', adapter_type='none', adapter_config=None, num
     # Make lm_head trainable
     # In GPT-2, the lm_head is tied to the input embeddings, so if the input embeddings are trainable, the lm_head will be trainable as well. If using a model with separate lm_head, we would need to make that trainable explicitly.
     for param in model.lm_head.parameters():
-        param.requires_grad = True
+        param.requires_grad = not freeze_lm_head
     print_trainable_parameters(model, "Headed")
 
     return model, tokenizer
