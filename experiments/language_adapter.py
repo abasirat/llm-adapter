@@ -14,7 +14,7 @@ from tqdm import tqdm
 import math
 import wandb
 from datetime import datetime
-from llm_adapter import setup_model, save_model
+from llm_adapter import setup_model, save_model, load_model
 from peft import LoraConfig, TaskType
 import random
 
@@ -295,7 +295,19 @@ def validate(model, val_dataloader, device, device_type, use_amp):
     avg_loss = val_loss / max(num_batches, 1)
     return avg_loss, num_batches
 
-def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=0.9, adam_beta2=0.999, weight_decay=0.0, early_stopping_patience=3, early_stopping_min_delta=1e-4, val_dataloader=None):
+def train(model, 
+          train_dataloader, 
+          device, model_path, 
+          num_epochs=1, 
+          adam_beta1=0.9, 
+          adam_beta2=0.999, 
+          weight_decay=0.0, 
+          early_stopping_patience=3, 
+          early_stopping_min_delta=1e-4, 
+          val_dataloader=None,
+          progress_interval=100,
+          val_interval=1000,
+          ):
     raw_model = model.to(device)
     trainable_params = [p for p in raw_model.parameters() if p.requires_grad]
 
@@ -383,10 +395,10 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
             num_batches += 1
             acc_loss.append(batch_loss)
 
-            step = epoch * (dataloader_len or 0) + i
-
+            step += 1
             progress_bar.update(progress if progress else 1)
-            if i % 100 == 0:
+    
+            if (i + 1) % progress_interval == 0:
                 running_loss = total_loss / num_batches
                 avg_acc_loss = sum(acc_loss) / len(acc_loss) if acc_loss else 0.0
                 progress_bar.set_description((f"running loss: {running_loss:.2f}, batch loss: {avg_acc_loss:.2f}") +
@@ -398,12 +410,12 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
                     wandb.log({"learning_rate": scheduler.get_lr()}, step=step)
 
                 if adapter_type == 'layer_adapter':
-                        residual_scaler = model.transformer.encoder.adapter_scale.item()
+                        residual_scaler = raw_model.transformer.encoder.adapter_scale.item()
                         wandb.log({"residual_scaler": residual_scaler}, step=step)
                 
-                        layer_token_attentions = model.transformer.encoder.layer_attention_metrics
+                        layer_token_attentions = raw_model.transformer.encoder.layer_attention_metrics
                         avg_layer_attention = layer_token_attentions["avg_attention_to_each_layer"].cpu().numpy()
-                        n_layer = model.config.n_layer
+                        n_layer = raw_model.config.n_layer
                         nl = len(avg_layer_attention)
                         avg_log_dict = {
                             f"layer_attn/layer_{i}": avg_layer_attention[i - n_layer + nl - 1] for i in range(n_layer, n_layer - nl, -1)
@@ -429,10 +441,10 @@ def train(model, train_dataloader, device, model_path, num_epochs=1, adam_beta1=
                 
                 acc_loss = []
 
-            if i > 0 and i % 1000 == 0: 
+            if (i + 1) % val_interval == 0: 
                 # Early stopping check (training-based, only if no validation set)
                 if val_dataloader is not None and early_stopping_patience > 0:
-                    avg_val_loss, _ = validate(model, val_dataloader, device, device_type, use_amp)
+                    avg_val_loss, _ = validate(raw_model, val_dataloader, device, device_type, use_amp)
                     wandb.log({"val_loss": avg_val_loss}, step=step)
                     print(f"Val Loss: {avg_val_loss:.4f}")
                     if avg_val_loss < best_val_loss - early_stopping_min_delta:
@@ -470,6 +482,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_tailor_layers', type=int, required=True, help='Number of tailor layers to add')
     parser.add_argument('--adapter_type', type=str, required=True, choices=['none', 'layer_adapter', 'lora'],
                         help='Type of adapter to use')
+    parser.add_argument('--freeze_lm_heads', action='store_true', help='Whether to freeze the language model heads')
     parser.add_argument('--chkpt', type=str, default='',
                         help='Path to checkpoint to resume from (optional)')
     parser.add_argument('--num_epochs', type=int, required=True, help='Number of training epochs')
@@ -512,6 +525,8 @@ if __name__ == '__main__':
     parser.add_argument('--early_stopping_patience', type=int, default=3, help='Early stopping patience (epochs without improvement) (default: 3, 0 to disable)')
     parser.add_argument('--early_stopping_min_delta', type=float, default=1e-4, help='Minimum loss improvement for early stopping (default: 1e-4)')
     parser.add_argument('--val_fraction', type=float, default=0.0, help='Fraction of training data to use for validation (default: 0.0 = no validation, early stopping disabled)')
+    parser.add_argument('--val_interval', type=int, default=1000, help='Number of training steps between validations (default: 1000)')
+    parser.add_argument('--progress_interval', type=int, default=100, help='Number of training steps between progress updates (default: 100)')
 
     # LoRA parameters
     parser.add_argument('--lora_r', type=int, default=4, help='LoRA rank (r parameter) (default: 4)')
@@ -521,9 +536,7 @@ if __name__ == '__main__':
 
     # layer_adapter parameters
     parser.add_argument('--num_aggregation_layers', type=int, default=None, help='Number of layers to aggregate in layer_adapter (default: None = all layers)')
-
-    # prefix embedding parameters
-    parser.add_argument('--prefix_length', type=int, default=8, help='Length of prefix embeddings for layer_adapter (default: 8)')
+    parser.add_argument('--prefix_length', type=int, default=0, help='Length of prefix embeddings for layer_adapter (default: 0 = no prefix)')
 
     args = parser.parse_args()
 
@@ -578,6 +591,10 @@ if __name__ == '__main__':
     lora_target_modules = [m.strip() for m in args.lora_target_modules.split(',')]
     num_aggregation_layers = args.num_aggregation_layers
     prefix_length = args.prefix_length
+    progress_interval = args.progress_interval
+    val_interval = args.val_interval
+    freeze_lm_heads = args.freeze_lm_heads
+
 
     current_date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     
@@ -603,6 +620,9 @@ if __name__ == '__main__':
         "lora_dropout": lora_dropout,
         "lora_target_modules": lora_target_modules,
         "num_aggregation_layers": num_aggregation_layers,
+        "progress_interval": progress_interval,
+        "val_interval": val_interval,
+        "freeze_lm_heads": freeze_lm_heads
     })
 
     device = set_device()
@@ -610,7 +630,7 @@ if __name__ == '__main__':
 
     if chkpt: # and os.path.exists(chkpt):
         print(f"loading model from {chkpt}")
-        model, tokenizer, adapter_config = load_learnable_params(chkpt)
+        model, tokenizer, adapter_config = load_model(chkpt)
         hf_dataset = None  # No dataset needed when loading from checkpoint
     else:
         if adapter_type == 'none':
@@ -620,7 +640,7 @@ if __name__ == '__main__':
                 'need_weights': True,
                 'dropout': 0.1,
                 'num_aggregation_layers': num_aggregation_layers,
-                'prefix_length': prefix_length
+                'prefix_length': prefix_length,
             }
         elif adapter_type == 'lora':
             adapter_config = LoraConfig(
@@ -628,7 +648,7 @@ if __name__ == '__main__':
                 r=lora_r,
                 lora_alpha=lora_alpha,
                 target_modules=lora_target_modules,
-                lora_dropout=lora_dropout
+                lora_dropout=lora_dropout,
             )
 
         # Load data source first (needed for tokenizer training)
@@ -679,7 +699,7 @@ if __name__ == '__main__':
                 wechsel_config['dataset'] = hf_dataset
                 wechsel_config['text_column'] = args.text_column
 
-        model, tokenizer = setup_model(model_name, adapter_type, adapter_config, num_tailor_layers, wechsel_config, tokenizer_path)
+        model, tokenizer = setup_model(model_name, adapter_type, adapter_config, num_tailor_layers, wechsel_config, tokenizer_path, freeze_lm_heads)
 
     PADDING_VALUE = tokenizer.pad_token_id
 
@@ -769,7 +789,19 @@ if __name__ == '__main__':
             pin_memory=True if device.type in ['cuda', 'mps'] else False
         )
 
-    model = train(model, train_dataloader, device, model_path, num_epochs, adam_beta1, adam_beta2, weight_decay, early_stopping_patience, early_stopping_min_delta, val_dataloader)
+    model = train(model, 
+                  train_dataloader, 
+                  device, 
+                  model_path, 
+                  num_epochs, 
+                  adam_beta1, 
+                  adam_beta2, 
+                  weight_decay, 
+                  early_stopping_patience, 
+                  early_stopping_min_delta, 
+                  val_dataloader, 
+                  progress_interval,
+                  val_interval)
 
     save_model(model, adapter_type, adapter_config, model_path)
 
