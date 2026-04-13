@@ -537,6 +537,7 @@ if __name__ == '__main__':
     # layer_adapter parameters
     parser.add_argument('--num_aggregation_layers', type=int, default=None, help='Number of layers to aggregate in layer_adapter (default: None = all layers)')
     parser.add_argument('--prefix_length', type=int, default=0, help='Length of prefix embeddings for layer_adapter (default: 0 = no prefix)')
+    parser.add_argument('--adjust_pre_mlps', action='store_true', help='Whether to adjust pre-MLP activations in layer_adapter (default: False)')
 
     args = parser.parse_args()
 
@@ -594,6 +595,7 @@ if __name__ == '__main__':
     progress_interval = args.progress_interval
     val_interval = args.val_interval
     freeze_lm_heads = args.freeze_lm_heads
+    pre_mlp_adjustment = args.adjust_pre_mlps
 
 
     current_date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -622,7 +624,8 @@ if __name__ == '__main__':
         "num_aggregation_layers": num_aggregation_layers,
         "progress_interval": progress_interval,
         "val_interval": val_interval,
-        "freeze_lm_heads": freeze_lm_heads
+        "freeze_lm_heads": freeze_lm_heads,
+        "adjust_pre_mlps": pre_mlp_adjustment
     })
 
     device = set_device()
@@ -641,6 +644,7 @@ if __name__ == '__main__':
                 'dropout': 0.1,
                 'num_aggregation_layers': num_aggregation_layers,
                 'prefix_length': prefix_length,
+                'adjust_pre_mlps': pre_mlp_adjustment,
             }
         elif adapter_type == 'lora':
             adapter_config = LoraConfig(

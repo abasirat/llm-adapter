@@ -92,6 +92,7 @@ class LayerAdapter(torch.nn.Module):
             dropout=0.1,
             num_aggregation_layers=None,
             prefix_length=10,
+            adjust_pre_mlps=False,
         ):
         super(LayerAdapter, self).__init__()
 
@@ -113,6 +114,8 @@ class LayerAdapter(torch.nn.Module):
         self.need_weights = need_weights
         self.num_aggregation_layers = num_aggregation_layers
 
+        self.adjust_pre_mlps = adjust_pre_mlps
+
         self.token_layer_attention = LowDimQKMultiHeadAttention(
                 input_dim = hs,
                 qk_dim = 32,
@@ -126,7 +129,7 @@ class LayerAdapter(torch.nn.Module):
         
         self.before_mlp_activations = []
         if self.encoder.name_or_path.startswith("gpt"):
-            self.hooks = self.hook_before_each_mlp_in_gpt()
+            self.hooks = self.hook_before_each_mlp_in_gpt() if adjust_pre_mlps else []
             self.forward = self.forward_gpt
         elif self.encoder.name_or_path.startswith("bert"):
             self.hooks = self.hook_before_each_mlp_in_bert()
@@ -138,10 +141,12 @@ class LayerAdapter(torch.nn.Module):
         self.input_dropout = torch.nn.Dropout(dropout)
         self.output_dropout = torch.nn.Dropout(dropout)
 
-        self.pre_mlp_linear_transforms = torch.nn.ModuleDict({
-            f"layer_{i}": LowRankLinear(hs, hs, rank=8) for i in range(self.config.n_layer, self.config.n_layer - nl, -1)
-            #f"layer_{i}": torch.nn.Linear(hs, hs) for i in range(self.config.n_layer, self.config.n_layer - nl, -1)
-        })
+        self.pre_mlp_linear_transforms = None
+        if adjust_pre_mlps:
+            self.pre_mlp_linear_transforms = torch.nn.ModuleDict({
+                f"layer_{i}": LowRankLinear(hs, hs, rank=8) for i in range(self.config.n_layer, self.config.n_layer - nl, -1)
+                #f"layer_{i}": torch.nn.Linear(hs, hs) for i in range(self.config.n_layer, self.config.n_layer - nl, -1)
+            })
 
         self.adapter_scale = torch.nn.Parameter(torch.tensor(0.0))
 
@@ -275,9 +280,11 @@ class LayerAdapter(torch.nn.Module):
             r:   (B, T, D)      aggregated representation
             w:   (B, T, L)      per-token layer weights
         """
-
-        nl = pre_mlp_activations.size(-1)
-        pre_mlps = torch.stack([self.pre_mlp_linear_transforms[f"layer_{i}"](pre_mlp_activations[..., i - self.config.n_layer + nl - 1]) for i in range(self.config.n_layer, self.config.n_layer - nl, -1)], dim=-1) # shape (B, T, D, L)
+        if self.adjust_pre_mlps:
+            nl = pre_mlp_activations.size(-1)
+            pre_mlps = torch.stack([self.pre_mlp_linear_transforms[f"layer_{i}"](pre_mlp_activations[..., i - self.config.n_layer + nl - 1]) for i in range(self.config.n_layer, self.config.n_layer - nl, -1)], dim=-1) # shape (B, T, D, L)
+        else:
+            pre_mlps = 0
         inputs = hidden_states + pre_mlps # shape (B, T, D, L)
         inputs = self.input_dropout(inputs)
 
@@ -417,15 +424,15 @@ class LayerAdapter(torch.nn.Module):
                 cache_position=cache_position,
             )
 
-        assert len(self.before_mlp_activations) == self.config.n_layer, \
+        assert len(self.before_mlp_activations) == self.config.n_layer or not self.adjust_pre_mlps, \
             f"Expected {self.config.n_layer} pre-MLP activations, got {len(self.before_mlp_activations)}"
 
         hs = torch.stack(encoder_outputs.hidden_states, -1)[..., 1:]
-        ac = torch.stack(self.before_mlp_activations, -1)
+        ac = torch.stack(self.before_mlp_activations, -1) if self.adjust_pre_mlps else None
 
         if self.num_aggregation_layers is not None:
             hs = hs[..., -self.num_aggregation_layers:]
-            ac = ac[..., -self.num_aggregation_layers:]
+            ac = ac[..., -self.num_aggregation_layers:] if ac is not None else None
 
         if attention_mask is not None:
             # key_padding_mask = ~attention_mask.bool()
