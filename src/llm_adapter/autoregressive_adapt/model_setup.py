@@ -1,5 +1,6 @@
 import torch
-from .layer_adapter import LayerAdapter
+#from .layer_adapter import LayerAdapter
+from .layer_adapter3 import LayerAdapter
 from transformers import AutoTokenizer, GPT2LMHeadModel
 from .language_tailor import LanguageAdapter
 from peft import get_peft_model

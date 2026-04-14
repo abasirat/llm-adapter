@@ -654,17 +654,27 @@ if __name__ == '__main__':
         if adapter_type == 'none':
             adapter_config = None
         elif adapter_type == 'layer_adapter':
+            #adapter_config = {
+            #    'need_weights': True,
+            #    'dropout': 0.1,
+            #    'num_aggregation_layers': num_aggregation_layers,
+            #    'prefix_length': prefix_length,
+            #    'adjust_pre_mlps': pre_mlp_adjustment,
+            #    'qk_dim': qk_dim,
+            #    'v_dim': v_dim,
+            #    'num_attention_heads': num_attention_heads,
+            #    'attention_temperature': attention_temperature,
+            #    'v_rank': None if v_rank == 0 else v_rank,
+            #}
             adapter_config = {
                 'need_weights': True,
                 'dropout': 0.1,
                 'num_aggregation_layers': num_aggregation_layers,
                 'prefix_length': prefix_length,
-                'adjust_pre_mlps': pre_mlp_adjustment,
                 'qk_dim': qk_dim,
-                'v_dim': v_dim,
                 'num_attention_heads': num_attention_heads,
                 'attention_temperature': attention_temperature,
-                'v_rank': None if v_rank == 0 else v_rank,
+                'out_rank': None if v_rank == 0 else v_rank,
             }
         elif adapter_type == 'lora':
             adapter_config = LoraConfig(
