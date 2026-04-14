@@ -32,15 +32,15 @@ class LowDimQKMultiHeadAttention(torch.nn.Module):
         self.qk_dim = qk_dim
         self.num_heads = num_heads
         self.head_qk_dim = qk_dim // num_heads
-        self.v_dim = v_dim if v_dim is not None else input_dim
+        self.v_dim = v_dim
 
         assert self.v_dim % num_heads == 0, "v_dim must be divisible by num_heads"
         self.head_v_dim = self.v_dim // num_heads
 
         self.q_proj = torch.nn.Linear(input_dim, qk_dim, bias=bias)
         self.k_proj = torch.nn.Linear(input_dim, qk_dim, bias=bias)
-        self.v_proj = torch.nn.Identity() if self.v_dim == input_dim else torch.nn.Linear(input_dim, self.v_dim, bias=bias)
-        self.out_proj = torch.nn.Identity() if self.v_dim == input_dim else torch.nn.Linear(self.v_dim, input_dim, bias=bias)
+        self.v_proj = torch.nn.Identity() if self.v_dim is None else torch.nn.Linear(input_dim, self.v_dim, bias=bias)
+        self.out_proj = torch.nn.Identity() if self.v_dim is None else torch.nn.Linear(self.v_dim, input_dim, bias=bias)
 
         self.attn_dropout = torch.nn.Dropout(dropout)
 
@@ -93,6 +93,11 @@ class LayerAdapter(torch.nn.Module):
             num_aggregation_layers=None,
             prefix_length=10,
             adjust_pre_mlps=False,
+            aggregate_embeddings=True,
+            qk_dim = 32,
+            v_dim = None,
+            num_attention_heads = 4,
+            attention_temperature = 2.0,
         ):
         super(LayerAdapter, self).__init__()
 
@@ -118,10 +123,11 @@ class LayerAdapter(torch.nn.Module):
 
         self.token_layer_attention = LowDimQKMultiHeadAttention(
                 input_dim = hs,
-                qk_dim = 32,
-                num_heads = 4,
+                qk_dim = qk_dim,
+                v_dim = v_dim,
+                num_heads = num_attention_heads,
                 dropout = dropout,
-                temperature = 2.0,
+                temperature = attention_temperature,
         )
 
         for param in self.encoder.parameters(): 
