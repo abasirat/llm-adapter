@@ -542,6 +542,7 @@ if __name__ == '__main__':
     parser.add_argument('--v_dim', type=int, default=None, help='Dimension of V in layer_adapter (default: None = same as Q/K)')
     parser.add_argument('--num_attention_heads', type=int, default=4, help='Number of attention heads in layer_adapter (default: 4)')
     parser.add_argument('--attention_temperature', type=float, default=2.0, help='Temperature for attention in layer_adapter (default: 2.0)')
+    parser.add_argument('--v_rank', type=int, default=0, help='Rank of V projection in layer_adapter (default: 0 = no low-rank projection)')
 
 
     args = parser.parse_args()
@@ -605,7 +606,7 @@ if __name__ == '__main__':
     v_dim = args.v_dim
     num_attention_heads = args.num_attention_heads
     attention_temperature = args.attention_temperature
-
+    v_rank = args.v_rank
 
     current_date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     
@@ -639,6 +640,7 @@ if __name__ == '__main__':
         "v_dim": v_dim,
         "num_attention_heads": num_attention_heads,
         "attention_temperature": attention_temperature,
+        "v_rank": v_rank,
     })
 
     device = set_device()
@@ -662,6 +664,7 @@ if __name__ == '__main__':
                 'v_dim': v_dim,
                 'num_attention_heads': num_attention_heads,
                 'attention_temperature': attention_temperature,
+                'v_rank': None if v_rank == 0 else v_rank,
             }
         elif adapter_type == 'lora':
             adapter_config = LoraConfig(

@@ -23,7 +23,7 @@ class LowRankLinear(torch.nn.Module):
         return torch.nn.functional.linear(x, W, self.bias)
 
 class LowDimQKMultiHeadAttention(torch.nn.Module):
-    def __init__(self, input_dim, qk_dim, num_heads, v_dim=None, dropout=0.1, bias=True, temperature=1.0):
+    def __init__(self, input_dim, qk_dim, num_heads, v_dim=None, dropout=0.1, bias=True, temperature=1.0, v_rank=None):
         super().__init__()
 
         assert qk_dim % num_heads == 0, "qk_dim must be divisible by num_heads"
@@ -39,11 +39,19 @@ class LowDimQKMultiHeadAttention(torch.nn.Module):
 
         self.q_proj = torch.nn.Linear(input_dim, qk_dim, bias=bias)
         self.k_proj = torch.nn.Linear(input_dim, qk_dim, bias=bias)
-        self.v_proj = torch.nn.Identity() if self.v_dim is None else torch.nn.Linear(input_dim, self.v_dim, bias=bias)
-        self.out_proj = torch.nn.Identity() if self.v_dim is None else torch.nn.Linear(self.v_dim, input_dim, bias=bias)
+
+        if self.v_dim is not None:
+            if v_rank is not None:
+                self.v_proj = LowRankLinear(input_dim, self.v_dim, v_rank, bias=bias)
+                self.out_proj = LowRankLinear(self.v_dim, input_dim, v_rank, bias=bias)
+            else:
+                self.v_proj = torch.nn.Linear(input_dim, self.v_dim, bias=bias)
+                self.out_proj = torch.nn.Linear(self.v_dim, input_dim, bias=bias)
+        else:
+            self.v_proj = torch.nn.Identity() 
+            self.out_proj = torch.nn.Identity()
 
         self.attn_dropout = torch.nn.Dropout(dropout)
-
         self.temperature = temperature
 
     def forward(self, Q, K, V, key_padding_mask=None, need_weights=False):
@@ -98,6 +106,7 @@ class LayerAdapter(torch.nn.Module):
             v_dim = None,
             num_attention_heads = 4,
             attention_temperature = 2.0,
+            v_rank = None,
         ):
         super(LayerAdapter, self).__init__()
 
@@ -105,6 +114,8 @@ class LayerAdapter(torch.nn.Module):
         nh = encoder.config.n_head
         nl = encoder.config.n_layer if num_aggregation_layers is None else num_aggregation_layers
         head_dim = hs // nh
+
+        self.embeddings_linear_transform = LowRankLinear(hs, hs, rank=16) if aggregate_embeddings else None
 
         self.prefix_length = prefix_length
         self.head_dim = head_dim
@@ -128,6 +139,8 @@ class LayerAdapter(torch.nn.Module):
                 num_heads = num_attention_heads,
                 dropout = dropout,
                 temperature = attention_temperature,
+                v_rank = v_rank,
+
         )
 
         for param in self.encoder.parameters(): 
@@ -150,7 +163,7 @@ class LayerAdapter(torch.nn.Module):
         self.pre_mlp_linear_transforms = None
         if adjust_pre_mlps:
             self.pre_mlp_linear_transforms = torch.nn.ModuleDict({
-                f"layer_{i}": LowRankLinear(hs, hs, rank=8) for i in range(self.config.n_layer, self.config.n_layer - nl, -1)
+                f"layer_{i}": LowRankLinear(hs, hs, rank=16) for i in range(self.config.n_layer, self.config.n_layer - nl, -1)
                 #f"layer_{i}": torch.nn.Linear(hs, hs) for i in range(self.config.n_layer, self.config.n_layer - nl, -1)
             })
 
