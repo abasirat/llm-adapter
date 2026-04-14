@@ -90,6 +90,7 @@ def main():
                 top_p=args.top_p,
                 repetition_penalty=args.repetition_penalty,
                 no_repeat_ngram_size=args.no_repeat_ngram_size,
+                pad_token_id=tokenizer.eos_token_id  # Ensure padding token is set for generation
             )
 
             generated_text = tokenizer.decode(
