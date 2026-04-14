@@ -538,6 +538,11 @@ if __name__ == '__main__':
     parser.add_argument('--num_aggregation_layers', type=int, default=None, help='Number of layers to aggregate in layer_adapter (default: None = all layers)')
     parser.add_argument('--prefix_length', type=int, default=0, help='Length of prefix embeddings for layer_adapter (default: 0 = no prefix)')
     parser.add_argument('--adjust_pre_mlps', action='store_true', help='Whether to adjust pre-MLP activations in layer_adapter (default: False)')
+    parser.add_argument('--qk_dim', type=int, default=32, help='Dimension of Q and K in layer_adapter (default: 32)')
+    parser.add_argument('--v_dim', type=int, default=None, help='Dimension of V in layer_adapter (default: None = same as Q/K)')
+    parser.add_argument('--num_attention_heads', type=int, default=4, help='Number of attention heads in layer_adapter (default: 4)')
+    parser.add_argument('--attention_temperature', type=float, default=2.0, help='Temperature for attention in layer_adapter (default: 2.0)')
+
 
     args = parser.parse_args()
 
@@ -596,6 +601,10 @@ if __name__ == '__main__':
     val_interval = args.val_interval
     freeze_lm_heads = args.freeze_lm_heads
     pre_mlp_adjustment = args.adjust_pre_mlps
+    qk_dim = args.qk_dim
+    v_dim = args.v_dim
+    num_attention_heads = args.num_attention_heads
+    attention_temperature = args.attention_temperature
 
 
     current_date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -625,7 +634,11 @@ if __name__ == '__main__':
         "progress_interval": progress_interval,
         "val_interval": val_interval,
         "freeze_lm_heads": freeze_lm_heads,
-        "adjust_pre_mlps": pre_mlp_adjustment
+        "adjust_pre_mlps": pre_mlp_adjustment,
+        "qk_dim": qk_dim,
+        "v_dim": v_dim,
+        "num_attention_heads": num_attention_heads,
+        "attention_temperature": attention_temperature,
     })
 
     device = set_device()
@@ -645,6 +658,10 @@ if __name__ == '__main__':
                 'num_aggregation_layers': num_aggregation_layers,
                 'prefix_length': prefix_length,
                 'adjust_pre_mlps': pre_mlp_adjustment,
+                'qk_dim': qk_dim,
+                'v_dim': v_dim,
+                'num_attention_heads': num_attention_heads,
+                'attention_temperature': attention_temperature,
             }
         elif adapter_type == 'lora':
             adapter_config = LoraConfig(
