@@ -543,6 +543,8 @@ if __name__ == '__main__':
     parser.add_argument('--num_attention_heads', type=int, default=4, help='Number of attention heads in layer_adapter (default: 4)')
     parser.add_argument('--attention_temperature', type=float, default=2.0, help='Temperature for attention in layer_adapter (default: 2.0)')
     parser.add_argument('--v_rank', type=int, default=0, help='Rank of V projection in layer_adapter (default: 0 = no low-rank projection)')
+    parser.add_argument('--agg_representation_type', type=str, default='mid_mlp', choices=['pre_mlp', 'mid_mlp', 'post_mlp'], help='Type of representation to aggregate in layer_adapter (default: mid_mlp)')
+    parser.add_argument('--agg_query_source', type=str, default='final_hidden', choices=["final_hidden", "top_repr"], help='Source of query for aggregation in layer_adapter (default: final_hidden)')
 
 
     args = parser.parse_args()
@@ -607,6 +609,9 @@ if __name__ == '__main__':
     num_attention_heads = args.num_attention_heads
     attention_temperature = args.attention_temperature
     v_rank = args.v_rank
+    agg_representation_type = args.agg_representation_type
+    agg_query_source = args.agg_query_source
+
 
     current_date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     
@@ -641,6 +646,8 @@ if __name__ == '__main__':
         "num_attention_heads": num_attention_heads,
         "attention_temperature": attention_temperature,
         "v_rank": v_rank,
+        "agg_representation_type": agg_representation_type,
+        "agg_query_source": agg_query_source,
     })
 
     device = set_device()
@@ -654,18 +661,6 @@ if __name__ == '__main__':
         if adapter_type == 'none':
             adapter_config = None
         elif adapter_type == 'layer_adapter':
-            #adapter_config = {
-            #    'need_weights': True,
-            #    'dropout': 0.1,
-            #    'num_aggregation_layers': num_aggregation_layers,
-            #    'prefix_length': prefix_length,
-            #    'adjust_pre_mlps': pre_mlp_adjustment,
-            #    'qk_dim': qk_dim,
-            #    'v_dim': v_dim,
-            #    'num_attention_heads': num_attention_heads,
-            #    'attention_temperature': attention_temperature,
-            #    'v_rank': None if v_rank == 0 else v_rank,
-            #}
             adapter_config = {
                 'need_weights': True,
                 'dropout': 0.1,
@@ -674,7 +669,8 @@ if __name__ == '__main__':
                 'qk_dim': qk_dim,
                 'num_attention_heads': num_attention_heads,
                 'attention_temperature': attention_temperature,
-                'out_rank': None if v_rank == 0 else v_rank,
+                'representation_type': agg_representation_type,
+                'query_source': agg_query_source,
             }
         elif adapter_type == 'lora':
             adapter_config = LoraConfig(

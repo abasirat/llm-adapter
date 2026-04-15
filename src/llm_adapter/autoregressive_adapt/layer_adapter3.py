@@ -48,7 +48,6 @@ class LowDimQKMultiHeadAttention(torch.nn.Module):
         dropout=0.1,
         bias=True,
         temperature=1.0,
-        out_rank=None,
     ):
         super().__init__()
 
@@ -67,10 +66,7 @@ class LowDimQKMultiHeadAttention(torch.nn.Module):
         self.k_proj = torch.nn.Linear(input_dim_kv, qk_dim, bias=bias)
 
         concat_value_dim = num_heads * input_dim_v
-        if out_rank is not None:
-            self.out_proj = LowRankLinear(concat_value_dim, output_dim, out_rank, bias=bias)
-        else:
-            self.out_proj = torch.nn.Linear(concat_value_dim, output_dim, bias=bias)
+        self.out_proj = torch.nn.Linear(concat_value_dim, output_dim, bias=bias)
 
         self.attn_dropout = torch.nn.Dropout(dropout)
 
@@ -115,6 +111,20 @@ class LowDimQKMultiHeadAttention(torch.nn.Module):
 
 
 class LayerAdapter(torch.nn.Module):
+    """
+    representation_type:
+        - "pre_mlp"  : input to block.mlp                -> shape (B, T, D)
+        - "mid_mlp"  : output of block.mlp.c_fc          -> shape (B, T, 4D)
+        - "post_mlp" : output of block.mlp.c_proj        -> shape (B, T, D)
+
+    query_source:
+        - "final_hidden" : encoder final hidden state
+        - "top_repr"     : top selected layer representation
+    """
+
+    VALID_REPRESENTATIONS = {"pre_mlp", "mid_mlp", "post_mlp"}
+    VALID_QUERY_SOURCES = {"final_hidden", "top_repr"}
+
     def __init__(
         self,
         encoder,
@@ -125,9 +135,21 @@ class LayerAdapter(torch.nn.Module):
         qk_dim=32,
         num_attention_heads=4,
         attention_temperature=2.0,
-        out_rank=None,
+        representation_type="mid_mlp",
+        query_source="final_hidden",
     ):
         super().__init__()
+
+        if representation_type not in self.VALID_REPRESENTATIONS:
+            raise ValueError(
+                f"representation_type must be one of {sorted(self.VALID_REPRESENTATIONS)}, "
+                f"got {representation_type!r}"
+            )
+        if query_source not in self.VALID_QUERY_SOURCES:
+            raise ValueError(
+                f"query_source must be one of {sorted(self.VALID_QUERY_SOURCES)}, "
+                f"got {query_source!r}"
+            )
 
         hs = encoder.config.hidden_size
         nh = encoder.config.n_head
@@ -146,31 +168,38 @@ class LayerAdapter(torch.nn.Module):
 
         self.need_weights = need_weights
         self.num_aggregation_layers = num_aggregation_layers
+        self.representation_type = representation_type
+        self.query_source = query_source
+
+        self.hidden_size = hs
+        self.mlp_dim = mlp_dim
+        self.rep_dim = self._get_representation_dim(representation_type)
 
         self.token_layer_attention = LowDimQKMultiHeadAttention(
-            input_dim_q=hs,       # query from residual stream
-            input_dim_kv=mlp_dim, # keys from c_fc activations
-            input_dim_v=mlp_dim,  # values from c_fc activations
-            output_dim=hs,        # final output back to hidden size
+            input_dim_q=hs,
+            input_dim_kv=self.rep_dim,
+            input_dim_v=self.rep_dim,
+            output_dim=hs,
             qk_dim=qk_dim,
             num_heads=num_attention_heads,
             dropout=dropout,
             temperature=attention_temperature,
-            out_rank=out_rank,
         )
 
         for param in self.encoder.parameters():
             param.requires_grad = False
 
-        self.mlp_c_fc_activations = []
+        self.layer_representations = []
 
         if self.encoder.name_or_path.startswith("gpt"):
-            self.hooks = self.hook_mlp_c_fc_in_gpt()
+            self.hooks = self._register_gpt_hooks()
             self.forward = self.forward_gpt
         elif self.encoder.name_or_path.startswith("bert"):
             raise NotImplementedError("BERT-style models not implemented yet. GPT-style models only for now.")
         else:
-            raise NotImplementedError("this implementation works only with standard gpt and bert families from huggingface")
+            raise NotImplementedError(
+                "this implementation works only with standard gpt and bert families from huggingface"
+            )
 
         self.input_dropout = torch.nn.Dropout(dropout)
         self.output_dropout = torch.nn.Dropout(dropout)
@@ -199,21 +228,78 @@ class LayerAdapter(torch.nn.Module):
             self.prefix_value = None
 
         self.query_layer_norm = torch.nn.LayerNorm(hs)
-        self.kv_layer_norm = torch.nn.LayerNorm(mlp_dim)
+        self.kv_layer_norm = torch.nn.LayerNorm(self.rep_dim)
 
-    def hook_mlp_c_fc_in_gpt(self):
-        def make_hook():
-            def hook(module, inputs, output):
-                if getattr(module, "is_tailor_block", False):
+        # Only needed when query_source == "top_repr" and rep_dim != hs
+        self.query_from_repr_proj = (
+            torch.nn.Linear(self.rep_dim, hs)
+            if self.query_source == "top_repr" and self.rep_dim != hs
+            else torch.nn.Identity()
+        )
+
+    def _get_representation_dim(self, representation_type: str) -> int:
+        if representation_type in {"pre_mlp", "post_mlp"}:
+            return self.hidden_size
+        if representation_type == "mid_mlp":
+            return self.mlp_dim
+        raise ValueError(f"Unknown representation_type: {representation_type}")
+
+    def _register_gpt_hooks(self):
+        if self.representation_type == "pre_mlp":
+            return self._hook_pre_mlp_in_gpt()
+        if self.representation_type == "mid_mlp":
+            return self._hook_mid_mlp_in_gpt()
+        if self.representation_type == "post_mlp":
+            return self._hook_post_mlp_in_gpt()
+        raise ValueError(f"Unknown representation_type: {self.representation_type}")
+
+    def _hook_pre_mlp_in_gpt(self):
+        def make_hook(block):
+            def hook(module, inputs):
+                if getattr(block, "is_tailor_block", False):
                     return
-                self.mlp_c_fc_activations.append(output)
+                self.layer_representations.append(inputs[0])
             return hook
 
         hooks = []
         for block in self.encoder.h:
             if getattr(block, "is_tailor_block", False):
                 continue
-            h = block.mlp.c_fc.register_forward_hook(make_hook())
+            h = block.mlp.register_forward_pre_hook(make_hook(block))
+            hooks.append(h)
+        return hooks
+
+
+    def _hook_mid_mlp_in_gpt(self):
+        def make_hook(block):
+            def hook(module, inputs, output):
+                if getattr(block, "is_tailor_block", False):
+                    return
+                self.layer_representations.append(output)
+            return hook
+
+        hooks = []
+        for block in self.encoder.h:
+            if getattr(block, "is_tailor_block", False):
+                continue
+            h = block.mlp.c_fc.register_forward_hook(make_hook(block))
+            hooks.append(h)
+        return hooks
+
+
+    def _hook_post_mlp_in_gpt(self):
+        def make_hook(block):
+            def hook(module, inputs, output):
+                if getattr(block, "is_tailor_block", False):
+                    return
+                self.layer_representations.append(output)
+            return hook
+
+        hooks = []
+        for block in self.encoder.h:
+            if getattr(block, "is_tailor_block", False):
+                continue
+            h = block.mlp.c_proj.register_forward_hook(make_hook(block))
             hooks.append(h)
         return hooks
 
@@ -254,8 +340,14 @@ class LayerAdapter(torch.nn.Module):
         self.layer_attention_metrics["num_aggregation_layers"] = attn_weights.size(-1)
         self.layer_attention_metrics["num_tokens_aggregated"] += attn_weights.size(0) * attn_weights.size(1)
 
-        avg_attention = self.layer_attention_metrics["sum_attention_to_each_layer"] / self.layer_attention_metrics["num_tokens_aggregated"]
-        avg_attention_squared = self.layer_attention_metrics["sum_attention_squared_to_each_layer"] / self.layer_attention_metrics["num_tokens_aggregated"]
+        avg_attention = (
+            self.layer_attention_metrics["sum_attention_to_each_layer"]
+            / self.layer_attention_metrics["num_tokens_aggregated"]
+        )
+        avg_attention_squared = (
+            self.layer_attention_metrics["sum_attention_squared_to_each_layer"]
+            / self.layer_attention_metrics["num_tokens_aggregated"]
+        )
         std_attention = torch.sqrt(avg_attention_squared - avg_attention ** 2 + 1e-8)
         entropy_of_attention = -torch.sum(avg_attention * torch.log(avg_attention + 1e-8))
 
@@ -263,17 +355,25 @@ class LayerAdapter(torch.nn.Module):
         self.layer_attention_metrics["std_attention_to_each_layer"] = std_attention
         self.layer_attention_metrics["entropy_of_layer_attention"] = entropy_of_attention
 
-    def aggregator(self, base_hidden_state, c_fc_activations, key_padding_mask=None):
+    def aggregator(self, base_hidden_state, layer_representations, key_padding_mask=None):
         """
-        base_hidden_state: (B, T, D)
-        c_fc_activations:  (B, T, 4D, L)
+        base_hidden_state:    (B, T, D)
+        layer_representations:(B, T, R, L)
+            R = D for pre_mlp / post_mlp
+            R = 4D for mid_mlp
         """
-        inputs = self.input_dropout(c_fc_activations)
+        inputs = self.input_dropout(layer_representations)
 
-        # Query from final hidden state
-        Q = self.query_layer_norm(base_hidden_state)  # (B, T, D)
+        if self.query_source == "final_hidden":
+            Q = self.query_layer_norm(base_hidden_state)  # (B, T, D)
+        elif self.query_source == "top_repr":
+            top_repr = inputs[..., -1]                    # (B, T, R)
+            top_repr = self.query_from_repr_proj(top_repr)  # (B, T, D)
+            Q = self.query_layer_norm(top_repr)
+        else:
+            raise ValueError(f"Unknown query_source: {self.query_source}")
 
-        # Per-token stack over layers: (B, T, 4D, L) -> (B*T, L, 4D)
+        # (B, T, R, L) -> (B*T, L, R)
         KV = inputs.permute(0, 1, 3, 2).contiguous().view(-1, inputs.size(-1), inputs.size(2))
         K = self.kv_layer_norm(KV)
         V = self.kv_layer_norm(KV)
@@ -356,7 +456,7 @@ class LayerAdapter(torch.nn.Module):
             )
             attention_mask = torch.cat([prefix_attention_mask, attention_mask], dim=1)
 
-        self.mlp_c_fc_activations = []
+        self.layer_representations = []
 
         with torch.no_grad():
             encoder_outputs = self.encoder(
@@ -371,32 +471,35 @@ class LayerAdapter(torch.nn.Module):
                 encoder_attention_mask=encoder_attention_mask,
                 use_cache=use_cache,
                 output_attentions=output_attentions,
-                output_hidden_states=True,
+                output_hidden_states=output_hidden_states,
                 return_dict=return_dict if return_dict is not None else True,
                 cache_position=cache_position,
             )
 
-        assert len(self.mlp_c_fc_activations) == self.config.n_layer, \
-            f"Expected {self.config.n_layer} c_fc activations, got {len(self.mlp_c_fc_activations)}"
+        expected_n_layers = self.config.n_layer
+        got_n_layers = len(self.layer_representations)
+        assert got_n_layers == expected_n_layers, (
+            f"Expected {expected_n_layers} {self.representation_type} activations, got {got_n_layers}"
+        )
 
-        # (B, T, 4D, L)
-        c_fc = torch.stack(self.mlp_c_fc_activations, dim=-1)
+        # (B, T, R, L)
+        reps = torch.stack(self.layer_representations, dim=-1)
 
         if self.num_aggregation_layers is not None:
-            c_fc = c_fc[..., -self.num_aggregation_layers:]
+            reps = reps[..., -self.num_aggregation_layers:]
 
         if attention_mask is not None:
-            key_padding_mask = ~attention_mask[:, -c_fc.size(1):].bool()
+            key_padding_mask = ~attention_mask[:, -reps.size(1):].bool()
         else:
             key_padding_mask = None
 
         aggregated_hidden_state, layer_token_attention = self.aggregator(
             base_hidden_state=encoder_outputs.last_hidden_state,
-            c_fc_activations=c_fc,
+            layer_representations=reps,
             key_padding_mask=key_padding_mask,
         )
 
-        self.mlp_c_fc_activations = []
+        self.layer_representations = []
 
         if layer_token_attention is not None:
             self.update_layer_attention_metrics(layer_token_attention)

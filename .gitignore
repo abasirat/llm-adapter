@@ -33,3 +33,9 @@ wandb/
 models/
 data/
 local_*.py
+adapter copy.py
+attention_fusion.py
+cross-attention.py
+model_eval
+model_eval/prompts/*.txt
+model_eval/prompts/*.json
