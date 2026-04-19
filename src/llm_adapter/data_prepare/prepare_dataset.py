@@ -409,7 +409,7 @@ def main():
         )
 
         
-        load_kwargs = dict(split=args.split, streaming=args.streaming)
+        load_kwargs = dict(split=args.split, streaming=args.streaming, trust_remote_code=True)
         if args.dataset_config:
             dataset = load_dataset(args.dataset_name, args.dataset_config, **load_kwargs)
         else:
