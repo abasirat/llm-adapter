@@ -1,6 +1,6 @@
 import torch
 #from .layer_adapter import LayerAdapter
-from .layer_adapter3 import LayerAdapter
+from .layer_adapter4 import LayerAdapter
 from transformers import AutoTokenizer, GPT2LMHeadModel
 from .language_tailor import LanguageAdapter
 from peft import get_peft_model
@@ -14,7 +14,7 @@ def setup_model(model_name='gpt2',
                 num_tailor_layers=0, 
                 wechsel_config=None, 
                 path_to_tokenizer=None,
-                freeze_lm_head=False
+                freeze_lm_head=True,
             ):
     
     if path_to_tokenizer is not None and os.path.exists(path_to_tokenizer):
