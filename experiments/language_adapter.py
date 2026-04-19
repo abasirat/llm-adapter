@@ -1,14 +1,11 @@
-import pdb
-
 import json
 import numpy as np
 import torch
 import os
-import sys
 import argparse
-from torch.utils.data import Dataset, IterableDataset
+from functools import partial
+from torch.utils.data import Dataset, random_split, ConcatDataset
 from torch.utils.data import DataLoader
-from torch.nn.utils.rnn import pad_sequence
 from torch.optim import Adam
 from tqdm import tqdm
 import math
@@ -49,113 +46,6 @@ def set_seed(seed = 42):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-class ChunkIterableDataset(IterableDataset):
-    def __init__(self, corpus_path=None, tokenizer=None, chunk_size:int = 1024, context_size:int = 1024, dataset=None, text_column:str = "text"):
-        """
-        Initialize ChunkIterableDataset.
-
-        Args:
-            corpus_path: Path to text file (optional if dataset is provided)
-            tokenizer: Tokenizer to use
-            chunk_size: Size of chunks to read at once
-            context_size: Size of context window for model
-            dataset: HuggingFace dataset object (optional if corpus_path is provided)
-            text_column: Column name in dataset containing text (default: "text")
-        """
-        if corpus_path is None and dataset is None:
-            raise ValueError("Either corpus_path or dataset must be provided")
-
-        if corpus_path is not None and dataset is not None:
-            raise ValueError("Only one of corpus_path or dataset should be provided, not both")
-
-        self.corpus_path = corpus_path
-        self.dataset = dataset
-        self.text_column = text_column
-        self.chunk_size = chunk_size
-        self.context_size = context_size
-        self.tokenizer = tokenizer
-        self.tell = 0
-
-        # Validate and get corpus size
-        if corpus_path is not None:
-            if not os.path.exists(corpus_path):
-                raise FileNotFoundError(f"File {corpus_path} not found!")
-            self.corpus_size = os.path.getsize(self.corpus_path)
-            print(f"Corpus size: {self.corpus_size} bytes")
-        else:
-            # For datasets, try to get the size if available
-            try:
-                self.corpus_size = len(dataset)
-                print(f"Dataset size: {self.corpus_size} samples")
-            except (TypeError, AttributeError):
-                # IterableDataset doesn't have len(), estimate will be done during iteration
-                self.corpus_size = None
-                print(f"Dataset size: Unknown (IterableDataset)")
-
-    def __iter__(self):
-        if self.corpus_path is not None:
-            return self._chunk_generator_file()
-        else:
-            return self._chunk_generator_dataset()
-
-    def _chunk_generator_file(self):
-        """Generator that reads from a file."""
-        self.tell = 0
-        buffer = []
-        with open(self.corpus_path, 'r', encoding='utf-8') as file:
-            while True:
-                chunk = file.read(self.chunk_size)
-                if not chunk:
-                    break
-
-                self.tell += len(chunk.encode("utf-8"))
-                buffer += self.tokenizer(chunk, truncation=False, add_special_tokens=False).input_ids
-
-                while len(buffer) > self.context_size:
-                    yield {
-                        'input_ids': torch.tensor(buffer[:self.context_size]),
-                        'progress': len(buffer[:self.context_size])  # Progress in bytes for file-based dataset,
-                    }
-                    buffer = buffer[self.context_size:]
-                    self.tell = 0
-
-        if buffer:
-            yield {
-                'input_ids': torch.tensor(buffer),
-                'progress': len(buffer)  # Final progress for remaining buffer
-            }
-
-    def _chunk_generator_dataset(self):
-        """Generator that reads from a HuggingFace dataset."""
-        buffer = []
-        for idx, sample in enumerate(self.dataset):
-            text = sample[self.text_column]
-            buffer += self.tokenizer(text, truncation=False, add_special_tokens=False).input_ids
-
-            while len(buffer) > self.context_size:
-                yield {
-                    'input_ids': torch.tensor(buffer[:self.context_size]),
-                    'progress': idx,
-                }
-                buffer = buffer[self.context_size:]
-
-        if buffer:
-            yield {
-                'input_ids': torch.tensor(buffer),
-                'progress': idx if idx else 0  # Use idx if available, else 0
-            }
-
-    def chunk_generator(self):
-        """Alias for __iter__ for backward compatibility."""
-        return self.__iter__()
-
-    def __len__(self):
-        """Return corpus size, or raise error if unknown (for IterableDataset)."""
-        if self.corpus_size is None:
-            raise TypeError("object of type 'IterableDataset' has no len()")
-        return self.corpus_size
-
-
 class TokenBinDataset(Dataset):
     """
     Read pre-tokenized token IDs from a binary file produced by
@@ -164,6 +54,8 @@ class TokenBinDataset(Dataset):
     The matching .json metadata sidecar (same path, .json extension) is read
     automatically to determine the correct dtype.  Falls back to uint16 when
     the sidecar is absent.
+    
+    Supports indexed access so it can be used with ConcatDataset/random_split.
     """
 
     def __init__(self, bin_path: str, context_size: int = 1024, max_tokens: int = None, start_token: int = 0, end_token: int = None):
@@ -196,13 +88,14 @@ class TokenBinDataset(Dataset):
             end_token = len(self.data)
         self.end_token = min(end_token, len(self.data))
 
+        # Compute expected number of chunks for logging
         self.num_tokens = self.end_token - self.start_token
         self.num_chunks = int(np.ceil(self.num_tokens / context_size))
 
         print(f"  total tokens : {self.num_tokens:,}")
         print(f"  context size : {context_size}")
         print(f"  chunks       : {self.num_chunks:,}")
-        if start_token > 0 or end_token < len(self.data):
+        if start_token > 0 or end_token < len(np.memmap(bin_path, dtype=dtype, mode='r')):
             print(f"  token range  : {start_token:,} - {self.end_token:,}")
 
     def __len__(self):
@@ -211,22 +104,15 @@ class TokenBinDataset(Dataset):
     def __getitem__(self, idx):
         start = self.start_token + idx * self.context_size
         end = min(start + self.context_size, self.end_token)
-        chunk = self.data[start : end].astype(np.int64)
+        chunk = self.data[start:end].astype(np.int64)
         input_ids = torch.from_numpy(np.array(chunk))  # copy out of memmap
         return {"input_ids": input_ids, "progress": 1}
 
-    def collate(self, batch):
-        input_ids = torch.stack([x['input_ids'] for x in batch if len(x['input_ids']) == self.context_size]) # Only include full context windows
-        attention_mask = torch.ones_like(input_ids, dtype=torch.bool)
-        progress = None
-        return {'input_ids':input_ids, 'attention_mask':attention_mask, 'labels':input_ids}, progress
-
-def collate(batch):
-    input_ids = [x['input_ids'] for x in batch]
-    input_ids = pad_sequence(input_ids, batch_first=True, padding_value=PADDING_VALUE)
-    attention_mask = (input_ids != PADDING_VALUE)
+def token_bin_collate(batch, context_size):
+    input_ids = torch.stack([x['input_ids'] for x in batch if len(x['input_ids']) == context_size])
+    attention_mask = torch.ones_like(input_ids, dtype=torch.bool)
     progress = None
-    return {'input_ids':input_ids, 'attention_mask':attention_mask, 'labels':input_ids}, progress
+    return {'input_ids': input_ids, 'attention_mask': attention_mask, 'labels': input_ids}, progress
 
 class WarmUpCosineDecayScheduler:
     def __init__(self, optimizer: torch.optim.Optimizer, warmup_steps: int, total_steps: int, base_lr: float):
@@ -359,11 +245,13 @@ def train(model,
         print("Early stopping disabled")
 
     step = 0
+    kl_loss_weight = 1e-2  # Weight for KL divergence loss when using variational modeling in layer_adapter
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0.0
         num_batches = 0
         acc_loss = []
+        acc_kl_loss = []
 
         # Use progress bar without total if length is unknown
         progress_bar = tqdm(total=dataloader_len, desc="Processing")
@@ -375,6 +263,12 @@ def train(model,
             #with torch.autocast(device_type=device_type, dtype=torch.float16, enabled=use_amp):
             outputs = model(**batch)
             loss = outputs.loss
+
+            # If using layer_adapter with variational modeling, add KL divergence loss
+            if adapter_type == 'layer_adapter' and variational_modeling:
+                kl_loss = raw_model.transformer.encoder.get_kl_loss()
+                loss += kl_loss_weight * kl_loss
+                acc_kl_loss.append(kl_loss.detach().float().item())
 
             if use_amp:
                 scaler.scale(loss).backward()
@@ -401,52 +295,90 @@ def train(model,
             if (i + 1) % progress_interval == 0:
                 running_loss = total_loss / num_batches
                 avg_acc_loss = sum(acc_loss) / len(acc_loss) if acc_loss else 0.0
-                progress_bar.set_description((f"running loss: {running_loss:.2f}, batch loss: {avg_acc_loss:.2f}") +
-                                            (f", LR: {scheduler.get_lr():.0e}" if scheduler else "") +
-                                            (f", best val loss: {best_val_loss:.2f}, patience: {patience_counter}/{early_stopping_patience}"))
+                avg_acc_kl_loss = sum(acc_kl_loss) / len(acc_kl_loss) if acc_kl_loss else 0.0
 
-                wandb.log({"batch_loss": avg_acc_loss, "running_loss": running_loss}, step=step)
+                description = (
+                    f"running loss: {running_loss:.2f}, batch loss: {avg_acc_loss:.2f}"
+                    + (f", LR: {scheduler.get_lr():.0e}" if scheduler else "")
+                    + (f", best val loss: {best_val_loss:.2f}, patience: {patience_counter}/{early_stopping_patience}")
+                    + (f", KL loss: {avg_acc_kl_loss:.4f}" if acc_kl_loss else "")
+                )
+                progress_bar.set_description(description)
+
+                log_dict = {
+                    "batch_loss": avg_acc_loss,
+                    "running_loss": running_loss,
+                }
+
                 if scheduler is not None:
-                    wandb.log({"learning_rate": scheduler.get_lr()}, step=step)
+                    log_dict["learning_rate"] = scheduler.get_lr()
 
                 if adapter_type == 'layer_adapter':
-                        residual_scaler = raw_model.transformer.encoder.adapter_scale.item()
-                        wandb.log({"residual_scaler": residual_scaler}, step=step)
-                
-                        layer_token_attentions = raw_model.transformer.encoder.layer_attention_metrics
-                        avg_layer_attention = layer_token_attentions["avg_attention_to_each_layer"].cpu().numpy()
-                        n_layer = raw_model.config.n_layer
-                        nl = len(avg_layer_attention)
-                        avg_log_dict = {
-                            f"layer_attn/layer_{i}": avg_layer_attention[i - n_layer + nl - 1] for i in range(n_layer, n_layer - nl, -1)
-                        }
-                        wandb.log(avg_log_dict, step=step)
-                        avg_layer_attention_data = [
-                            [f"layer_{i}", avg_layer_attention[i - n_layer + nl - 1]] for i in range(n_layer, n_layer - nl, -1)
-                        ]
+                    #log_dict["residual_scaler"] = raw_model.transformer.encoder.adapter_scale.item()
 
-                        avg_layer_attention_table = wandb.Table(data=avg_layer_attention_data, columns=["layer", "attention"])
+                    layer_token_attentions = raw_model.transformer.encoder.layer_attention_metrics
+                    ent_layer_attention = layer_token_attentions["entropy_of_layer_attention"].cpu().item()
+                    log_dict["layer_attn/entropy"] = ent_layer_attention
 
-                        wandb.log({
-                            "layer_attn/bar": wandb.plot.bar(
-                                avg_layer_attention_table,
-                                "layer",
-                                "attention",
-                                title="Layer Attention Distribution"
-                            )
-                            }, step=step)
+                    if variational_modeling:
+                        mu, std = raw_model.transformer.encoder.get_variational_stats()
+                        logvar = 2.0 * torch.log(std.clamp_min(1e-8))
 
-                        ent_layer_attention = layer_token_attentions["entropy_of_layer_attention"].cpu().item()
-                        wandb.log({"layer_attn/entropy": ent_layer_attention}, step=step)
-                
+                        log_dict["variational/mu_mean"] = mu.mean().item()
+                        log_dict["variational/mu_abs_mean"] = mu.abs().mean().item()
+                        log_dict["variational/mu_rms"] = mu.pow(2).mean().sqrt().item()
+
+                        log_dict["variational/std_mean"] = std.mean().item()
+                        log_dict["variational/std_std"] = std.std().item()
+                        log_dict["variational/std_min"] = std.min().item()
+                        log_dict["variational/std_max"] = std.max().item()
+
+                        kl_mu_term = 0.5 * mu.pow(2)
+                        kl_var_term = 0.5 * (std.pow(2) - 1.0 - logvar)
+
+                        log_dict["variational/kl_mu_term"] = kl_mu_term.mean().item()
+                        log_dict["variational/kl_var_term"] = kl_var_term.mean().item()
+
+                        log_dict["variational/batch_kl_loss"] = avg_acc_kl_loss 
+
+                wandb.log(log_dict, step=step)
+
+                if adapter_type == 'layer_adapter':
+                    layer_token_attentions = raw_model.transformer.encoder.layer_attention_metrics
+                    avg_layer_attention = layer_token_attentions["avg_attention_to_each_layer"].detach().cpu().numpy()
+
+                    n_layer = raw_model.config.n_layer
+                    nl = len(avg_layer_attention)
+
+                    avg_layer_attention_data = [
+                        [f"layer_{layer_idx}", avg_layer_attention[layer_idx - n_layer + nl - 1]]
+                        for layer_idx in range(n_layer, n_layer - nl, -1)
+                    ]
+
+                    avg_layer_attention_table = wandb.Table(
+                        data=avg_layer_attention_data,
+                        columns=["layer", "attention"]
+                    )
+
+                    wandb.log({
+                        "layer_attn/bar": wandb.plot.bar(
+                            avg_layer_attention_table,
+                            "layer",
+                            "attention",
+                            title="Layer Attention Distribution"
+                        )
+                    }, step=step)
+
                 acc_loss = []
+                acc_kl_loss = []
 
             if (i + 1) % val_interval == 0: 
                 # Early stopping check (training-based, only if no validation set)
                 if val_dataloader is not None and early_stopping_patience > 0:
-                    avg_val_loss, _ = validate(raw_model, val_dataloader, device, device_type, use_amp)
+                    avg_val_loss, _ = validate(raw_model, val_dataloader, device, device_type, use_amp) # Note: the loss does not include the KL divergence component, since that is not computed during validation.  This means that when using variational modeling, the absolute value of the validation loss may not be directly comparable to the training loss, but it can still be used for early stopping based on relative improvements.
                     wandb.log({"val_loss": avg_val_loss}, step=step)
                     print(f"Val Loss: {avg_val_loss:.4f}")
+
                     if avg_val_loss < best_val_loss - early_stopping_min_delta:
                         best_val_loss = avg_val_loss
                         patience_counter = 0
@@ -458,7 +390,13 @@ def train(model,
                             break
 
                     wandb.log({"best_val_loss": best_val_loss, "patience_counter": patience_counter}, step=step)
-                
+
+                    if adapter_type == 'layer_adapter' and variational_modeling:
+                        mu, std = raw_model.transformer.encoder.get_variational_stats()
+                        mu_rms = mu.pow(2).mean().sqrt().item()
+                        std_rms = std.pow(2).mean().sqrt().item()
+                        print(f"Variational stats at validation - mu_rms: {mu_rms:.4f}, std_rms: {std_rms:.4f}")
+
                 print(f"save parameters - progress {progress}")
                 save_model(raw_model, adapter_type, adapter_config, model_path+'-trace')
 
@@ -489,32 +427,12 @@ if __name__ == '__main__':
     parser.add_argument('--proj_name', type=str, required=True, help='Weights & Biases project name')
     parser.add_argument('--experiment_description', type=str, required=True, help='Experiment description for W&B')
 
-    # WECHSEL parameters – only required when tokenizer training is needed
-    # (i.e. not using --token_bin and not resuming from --chkpt)
-    parser.add_argument('--src_language', type=str, default=None, help='Source language code for WECHSEL')
-    parser.add_argument('--tgt_language', type=str, default=None, help='Target language code for WECHSEL')
-    parser.add_argument('--wechsel_dictionary', type=str, default=None, help='Bilingual dictionary name or path for WECHSEL')
-
-    # Data source options
-    parser.add_argument('--train_data', type=str, default=None,
-                        help='Path to training data file (use this OR --dataset_name, not both)')
-    parser.add_argument('--dataset_name', type=str, default=None,
-                        help='HuggingFace dataset name (use this OR --train_data, not both)')
-    parser.add_argument('--dataset_split', type=str, default='train',
-                        help='Dataset split to use (default: train)')
-    parser.add_argument('--dataset_config', type=str, default=None,
-                        help='Dataset configuration (e.g., language code for multilingual datasets)')
-    parser.add_argument('--text_column', type=str, default='text',
-                        help='Column name containing text in dataset (default: text)')
-    parser.add_argument('--language_filter', type=str, default=None,
-                        help='Language code to filter samples (e.g., "da" for Danish; requires language column)')
-    parser.add_argument('--token_bin', type=str, default=None,
-                        help='Path to a pre-tokenized .bin file produced by data/prepare_dataset.py '
-                             '(use this OR --train_data / --dataset_name, not in combination)')
+    # Data source options: only pre-tokenized binary inputs are supported.
+    parser.add_argument('--token_bin', type=str, nargs='+', required=True,
+                        help='Path(s) to pre-tokenized .bin file(s) produced by data/prepare_dataset.py')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility (default: 42)')
 
     # Optional parameters
-    parser.add_argument('--chunk_size', type=int, default=4*1024, help='Chunk size for data loading (default: 4096)')
     parser.add_argument('--learning_rate', type=float, default=5e-5, help='Learning rate (default: 5e-5)')
     parser.add_argument('--batch_size', type=int, default=1, help='Batch size (default: 1)')
     parser.add_argument('--context_size', type=int, default=1024, help='Context size (default: 1024)')
@@ -545,31 +463,15 @@ if __name__ == '__main__':
     parser.add_argument('--v_rank', type=int, default=0, help='Rank of V projection in layer_adapter (default: 0 = no low-rank projection)')
     parser.add_argument('--agg_representation_type', type=str, default='mid_mlp', choices=['pre_mlp', 'mid_mlp', 'post_mlp'], help='Type of representation to aggregate in layer_adapter (default: mid_mlp)')
     parser.add_argument('--agg_query_source', type=str, default='final_hidden', choices=["final_hidden", "top_repr"], help='Source of query for aggregation in layer_adapter (default: final_hidden)')
+    parser.add_argument('--variational_modeling', action='store_true', help='Whether to use variational modeling in layer_adapter (default: False)')
 
 
     args = parser.parse_args()
 
-    # Validate data source
-    sources_provided = sum(x is not None for x in [args.train_data, args.dataset_name, args.token_bin])
-    if sources_provided == 0:
-        parser.error("One of --train_data, --dataset_name, or --token_bin must be provided")
-    if sources_provided > 1:
-        parser.error("Only one of --train_data, --dataset_name, or --token_bin should be provided, not multiple")
+    token_bin_paths = args.token_bin
 
     # Set random seed for reproducibility
     set_seed(args.seed)
-
-    # WECHSEL args are only needed when the tokenizer must be trained
-    # (no pre-tokenized binary and not resuming from a checkpoint)
-    wechsel_needed = not args.chkpt and args.token_bin is None
-    if wechsel_needed:
-        missing = [flag for flag, val in [
-            ('--src_language',      args.src_language),
-            ('--tgt_language',      args.tgt_language),
-            ('--wechsel_dictionary', args.wechsel_dictionary),
-        ] if not val]
-        if missing:
-            parser.error(f"WECHSEL tokenizer training requires: {', '.join(missing)}")
 
     model_name = args.model_name
     model_path = args.model_path
@@ -580,10 +482,6 @@ if __name__ == '__main__':
     num_epochs = args.num_epochs
     project_name = args.proj_name
     experiment_description = args.experiment_description
-    src_language = args.src_language
-    tgt_language = args.tgt_language
-    wechsel_dictionary = args.wechsel_dictionary
-    chunk_size = args.chunk_size
     learning_rate = args.learning_rate
     batch_size = args.batch_size
     context_size = args.context_size
@@ -611,7 +509,7 @@ if __name__ == '__main__':
     v_rank = args.v_rank
     agg_representation_type = args.agg_representation_type
     agg_query_source = args.agg_query_source
-
+    variational_modeling = args.variational_modeling
 
     current_date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     
@@ -648,6 +546,7 @@ if __name__ == '__main__':
         "v_rank": v_rank,
         "agg_representation_type": agg_representation_type,
         "agg_query_source": agg_query_source,
+        "variational_modeling": variational_modeling,
     })
 
     device = set_device()
@@ -656,7 +555,6 @@ if __name__ == '__main__':
     if chkpt: # and os.path.exists(chkpt):
         print(f"loading model from {chkpt}")
         model, tokenizer, adapter_config = load_model(chkpt)
-        hf_dataset = None  # No dataset needed when loading from checkpoint
     else:
         if adapter_type == 'none':
             adapter_config = None
@@ -671,6 +569,7 @@ if __name__ == '__main__':
                 'attention_temperature': attention_temperature,
                 'representation_type': agg_representation_type,
                 'query_source': agg_query_source,
+                'variational_modeling': variational_modeling,
             }
         elif adapter_type == 'lora':
             adapter_config = LoraConfig(
@@ -681,123 +580,47 @@ if __name__ == '__main__':
                 lora_dropout=lora_dropout,
             )
 
-        # Load data source first (needed for tokenizer training)
-        if args.train_data is not None:
-            print(f"Preparing data from file: {args.train_data}")
-            hf_dataset = None
-        elif args.token_bin is not None:
-            print(f"Using pre-tokenized binary: {args.token_bin}")
-            hf_dataset = None
-        else:
-            print(f"Loading dataset: {args.dataset_name}")
-            if args.dataset_config:
-                print(f"  Config: {args.dataset_config}")
-            print(f"  Split: {args.dataset_split}")
-            if args.language_filter:
-                print(f"  Language filter: {args.language_filter}")
-
-            from datasets import load_dataset
-            if args.dataset_config:
-                hf_dataset = load_dataset(args.dataset_name, args.dataset_config, split=args.dataset_split, streaming=True)
-            else:
-                hf_dataset = load_dataset(args.dataset_name, split=args.dataset_split, streaming=True)
-
-            # Apply language filter if specified
-            if args.language_filter:
-                print(f"Filtering dataset for language: {args.language_filter}")
-                hf_dataset = hf_dataset.filter(
-                    lambda x: x.get('lang', x.get('language', '')) == args.language_filter,
-                    desc=f"Filtering for {args.language_filter}"
-                )
-                print(f"Filtered dataset size: {len(hf_dataset)} samples")
-            
-            #hf_dataset = hf_dataset.take(100_000)
-
-        # Prepare wechsel_config with dataset if available.
-        # Pre-tokenized binary data already has the tokenizer baked in, so
-        # WECHSEL language adaptation is skipped in that case.
-        if args.token_bin is not None:
-            wechsel_config = None
-        else:
-            wechsel_config = {
-                'train_corpus_path': args.train_data,
-                'source_language': src_language,
-                'target_language': tgt_language,
-                'dictionary': wechsel_dictionary
-            }
-            if hf_dataset is not None:
-                wechsel_config['dataset'] = hf_dataset
-                wechsel_config['text_column'] = args.text_column
-
+        print(f"Using pre-tokenized binary file(s): {token_bin_paths}")
+        wechsel_config = None
         model, tokenizer = setup_model(model_name, adapter_type, adapter_config, num_tailor_layers, wechsel_config, tokenizer_path, freeze_lm_heads)
 
-    PADDING_VALUE = tokenizer.pad_token_id
+    # Create training dataset from pre-tokenized binary file(s)
+    print(f"Creating training dataset from pre-tokenized binary file(s): {token_bin_paths}")
+    if prefix_length > 0 and adapter_type == 'layer_adapter':
+        if context_size + prefix_length > model.config.n_positions:
+            print(f"Context size + prefix length ({context_size + prefix_length}) exceeds model's maximum position embeddings ({model.config.n_positions})")
+            print(f"Adjusting context size for prefix embeddings: original {context_size}, prefix {prefix_length}")
+            context_size -= prefix_length
+            print(f"New context size: {context_size}")
 
-    # Create training dataset
-    if args.token_bin is not None:
-        print(f"Creating training dataset from pre-tokenized binary: {args.token_bin}")
-        if prefix_length > 0 and adapter_type == 'layer_adapter':
-            if context_size + prefix_length > model.config.n_positions:
-                print(f"Context size + prefix length ({context_size + prefix_length}) exceeds model's maximum position embeddings ({model.config.n_positions})")
-                print(f"Adjusting context size for prefix embeddings: original {context_size}, prefix {prefix_length}")
-                context_size -= prefix_length
-                print(f"New context size: {context_size}")
-
-        full_dataset = TokenBinDataset(
-            bin_path=args.token_bin,
+    token_bin_datasets = [
+        TokenBinDataset(
+            bin_path=bin_path,
             context_size=context_size,
         )
+        for bin_path in token_bin_paths
+    ]
+    full_dataset = ConcatDataset(token_bin_datasets)
 
-        # Split into train and validation if requested
-        if val_fraction > 0:
-            val_size = int(full_dataset.num_chunks * val_fraction)
-            train_size = full_dataset.num_chunks - val_size
+    # Split into train and validation if requested
+    if val_fraction > 0:
+        total_size = len(full_dataset)
+        val_size = int(total_size * val_fraction)
+        train_size = total_size - val_size
 
-            # Calculate token boundaries for slicing
-            val_start_token = train_size * context_size
-
-            train_dataset = TokenBinDataset(
-                bin_path=args.token_bin,
-                context_size=context_size,
-                end_token=val_start_token,
-            )
-            val_dataset = TokenBinDataset(
-                bin_path=args.token_bin,
-                context_size=context_size,
-                start_token=val_start_token,
-            )
-            print(f"Split into train ({train_size} chunks) and validation ({val_size} chunks)")
-            val_collate_fn = val_dataset.collate
-        else:
-            train_dataset = full_dataset
-            val_dataset = None
-            val_collate_fn = None
-
-        collate_fn = train_dataset.collate
-    elif args.train_data is not None:
-        print(f"Creating training dataset from file: {args.train_data}")
-        train_dataset = ChunkIterableDataset(
-            corpus_path=args.train_data,
-            tokenizer=tokenizer,
-            context_size=context_size,
-            chunk_size=chunk_size
+        train_dataset, val_dataset = random_split(
+            full_dataset,
+            [train_size, val_size],
+            generator=torch.Generator().manual_seed(args.seed)
         )
-        collate_fn = collate
-        val_dataset = None
-        val_collate_fn = None
+        print(f"Split into train ({train_size} chunks) and validation ({val_size} chunks)")
+        val_collate_fn = partial(token_bin_collate, context_size=context_size)
     else:
-        print(f"Creating training dataset from HuggingFace dataset")
-        # Dataset was already loaded above, reuse it
-        train_dataset = ChunkIterableDataset(
-            dataset=hf_dataset,
-            tokenizer=tokenizer,
-            context_size=context_size,
-            chunk_size=chunk_size,
-            text_column=args.text_column
-        )
-        collate_fn = collate
+        train_dataset = full_dataset
         val_dataset = None
         val_collate_fn = None
+
+    collate_fn = partial(token_bin_collate, context_size=context_size)
 
     train_dataloader = DataLoader(
         train_dataset,
@@ -805,6 +628,7 @@ if __name__ == '__main__':
         collate_fn=collate_fn,
         num_workers=num_workers,
         persistent_workers=num_workers > 0,
+        shuffle=True, # shuffling is fine since each item is a chunk of tokens and does not have an inherent order relative to other items
         pin_memory=True if device.type in ['cuda', 'mps'] else False
     )
 
@@ -816,6 +640,7 @@ if __name__ == '__main__':
             collate_fn=val_collate_fn,
             num_workers=num_workers,
             persistent_workers=num_workers > 0,
+            shuffle=False, # no need to shuffle validation data
             pin_memory=True if device.type in ['cuda', 'mps'] else False
         )
 
