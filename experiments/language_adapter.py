@@ -4,7 +4,7 @@ import torch
 import os
 import argparse
 from functools import partial
-from torch.utils.data import Dataset, random_split, ConcatDataset
+from torch.utils.data import Dataset, random_split
 from torch.utils.data import DataLoader
 from torch.optim import Adam
 from tqdm import tqdm
@@ -106,7 +106,41 @@ class TokenBinDataset(Dataset):
         end = min(start + self.context_size, self.end_token)
         chunk = self.data[start:end].astype(np.int64)
         input_ids = torch.from_numpy(np.array(chunk))  # copy out of memmap
+        tokens = tokenizer.batch_decode(input_ids, skip_special_tokens=False)
+        #if random.random() < 0.01:  # Log a sample of decoded text for sanity checking (10% of batches)
+        #    print(f"Decoded sample tokens (idx {idx}): {''.join(tokens)}")  
         return {"input_ids": input_ids, "progress": 1}
+
+class RollerCoasterDataset(Dataset):
+    """ A dataset that iterates over an array of datasets in a round-robin fashion, yielding one batch from each in turn. This can help to stabilize training when using multiple datasets with different characteristics. """
+    def __init__(self, datasets, probabilities=None):
+        self.datasets = datasets
+        self.dataset_idx = [0] * len(datasets)  # Track the current index for each dataset
+        if probabilities is None:
+            probabilities = [len(dataset) / len(self) for dataset in datasets]  # Default to sampling proportionally to dataset size
+        self.probabilities = probabilities
+
+    def __len__(self):
+        return sum(len(dataset) for dataset in self.datasets)
+
+    def __getitem__(self, idx):
+        if idx >= len(self):
+            raise IndexError("Index out of range for RollerCoasterDataset")
+        if idx < 0:
+            idx = len(self) + idx  # Support negative indexing
+
+        
+        current_dataset_idx = np.random.choice(len(self.datasets), p=self.probabilities)
+        item_idx = idx // len(self.datasets)  # Determine the index within that dataset
+        while item_idx >= len(self.datasets[current_dataset_idx]):
+            # If we've exhausted the current dataset, choose another one and recalculate the item index
+            current_dataset_idx = np.random.choice(len(self.datasets), p=self.probabilities)
+            item_idx = idx // len(self.datasets)
+        #print(f"RollerCoasterDataset: yielding item {item_idx} from dataset {current_dataset_idx} (global idx {idx})")
+        return self.datasets[current_dataset_idx][item_idx]
+        
+        
+
 
 def token_bin_collate(batch, context_size):
     input_ids = torch.stack([x['input_ids'] for x in batch if len(x['input_ids']) == context_size])
@@ -245,7 +279,7 @@ def train(model,
         print("Early stopping disabled")
 
     step = 0
-    kl_loss_weight = 1e-2  # Weight for KL divergence loss when using variational modeling in layer_adapter
+    kl_loss_weight = 1 #1e-2  # Weight for KL divergence loss when using variational modeling in layer_adapter
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0.0
@@ -552,6 +586,7 @@ if __name__ == '__main__':
     device = set_device()
     print(f"The active device is {device}")
 
+    adapter_config = None
     if chkpt: # and os.path.exists(chkpt):
         print(f"loading model from {chkpt}")
         model, tokenizer, adapter_config = load_model(chkpt)
@@ -593,34 +628,29 @@ if __name__ == '__main__':
             context_size -= prefix_length
             print(f"New context size: {context_size}")
 
-    token_bin_datasets = [
-        TokenBinDataset(
-            bin_path=bin_path,
-            context_size=context_size,
-        )
-        for bin_path in token_bin_paths
-    ]
-    full_dataset = ConcatDataset(token_bin_datasets)
-
     # Split into train and validation if requested
-    if val_fraction > 0:
-        total_size = len(full_dataset)
-        val_size = int(total_size * val_fraction)
-        train_size = total_size - val_size
+    train_datasets, val_datasets = [], []
+    for token_bin_path in token_bin_paths:
+        dataset = TokenBinDataset(token_bin_path, context_size=context_size, start_token=0, end_token=None)
+        if val_fraction > 0:
+            total_size = len(dataset)
+            val_size = int(total_size * val_fraction)
+            train_size = total_size - val_size
 
-        train_dataset, val_dataset = random_split(
-            full_dataset,
-            [train_size, val_size],
-            generator=torch.Generator().manual_seed(args.seed)
-        )
-        print(f"Split into train ({train_size} chunks) and validation ({val_size} chunks)")
-        val_collate_fn = partial(token_bin_collate, context_size=context_size)
-    else:
-        train_dataset = full_dataset
-        val_dataset = None
-        val_collate_fn = None
-
+            train_dataset, val_dataset = random_split(
+                dataset,
+                [train_size, val_size],
+                generator=torch.Generator().manual_seed(args.seed)
+            )
+            print(f"Split {token_bin_path} into train ({train_size} chunks) and validation ({val_size} chunks)")
+            train_datasets.append(train_dataset)
+            val_datasets.append(val_dataset)
+        else:
+            train_datasets.append(dataset)
+    train_dataset = RollerCoasterDataset(train_datasets) if len(train_datasets) > 1 else train_datasets[0]
+    val_dataset = RollerCoasterDataset(val_datasets) if len(val_datasets) > 1 else val_datasets[0] if val_datasets else None
     collate_fn = partial(token_bin_collate, context_size=context_size)
+    val_collate_fn = collate_fn if val_dataset is not None else None
 
     train_dataloader = DataLoader(
         train_dataset,
@@ -628,7 +658,7 @@ if __name__ == '__main__':
         collate_fn=collate_fn,
         num_workers=num_workers,
         persistent_workers=num_workers > 0,
-        shuffle=True, # shuffling is fine since each item is a chunk of tokens and does not have an inherent order relative to other items
+        shuffle=False,
         pin_memory=True if device.type in ['cuda', 'mps'] else False
     )
 
