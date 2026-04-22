@@ -214,7 +214,7 @@ class LayerAdapter(torch.nn.Module):
         self.input_dropout = torch.nn.Dropout(dropout)
         self.output_dropout = torch.nn.Dropout(dropout)
 
-        #self.adapter_scale = torch.nn.Parameter(torch.tensor(1.0))
+        self.adapter_scale = torch.nn.Parameter(torch.tensor(0.0))
 
         # Variational settings
         self.variational_modeling = variational_modeling
@@ -474,8 +474,8 @@ class LayerAdapter(torch.nn.Module):
             self.last_mu = None
             self.last_std = None
 
-        #r = base_hidden_state + self.adapter_scale * delta
-        r = base_hidden_state + delta
+        r = base_hidden_state + self.adapter_scale * delta
+        #r = base_hidden_state + delta
 
         if attn_weights is not None:
             attn_weights = attn_weights.mean(dim=1)   # (B*T, 1, L)

@@ -277,7 +277,7 @@ def train(model,
         print("Early stopping disabled")
 
     step = 0
-    kl_loss_weight = 1 #1e-2  # Weight for KL divergence loss when using variational modeling in layer_adapter
+    kl_loss_weight = 1e-2  # Weight for KL divergence loss when using variational modeling in layer_adapter
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0.0
@@ -346,7 +346,7 @@ def train(model,
                     log_dict["learning_rate"] = scheduler.get_lr()
 
                 if adapter_type == 'layer_adapter':
-                    #log_dict["residual_scaler"] = raw_model.transformer.encoder.adapter_scale.item()
+                    log_dict["residual_scaler"] = raw_model.transformer.encoder.adapter_scale.item()
 
                     layer_token_attentions = raw_model.transformer.encoder.layer_attention_metrics
                     ent_layer_attention = layer_token_attentions["entropy_of_layer_attention"].cpu().item()
