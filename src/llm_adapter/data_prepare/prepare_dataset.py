@@ -479,8 +479,8 @@ def main():
         split_tag = base
 
     os.makedirs(os.path.dirname(os.path.abspath(args.output_prefix)), exist_ok=True)
-    bin_path  = f"{args.output_prefix}_{split_tag}.bin"
-    meta_path = f"{args.output_prefix}_{split_tag}.json"
+    bin_path  = f"{args.output_prefix}.bin"
+    meta_path = f"{args.output_prefix}.json"
 
     # ── Tokenize ────────────────────────────────────────────────────────────
     # For streaming HF datasets, iterating again after WECHSEL is fine –
