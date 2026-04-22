@@ -139,9 +139,6 @@ class RollerCoasterDataset(Dataset):
         #print(f"RollerCoasterDataset: yielding item {item_idx} from dataset {current_dataset_idx} (global idx {idx})")
         return self.datasets[current_dataset_idx][item_idx]
         
-        
-
-
 def token_bin_collate(batch, context_size):
     input_ids = torch.stack([x['input_ids'] for x in batch if len(x['input_ids']) == context_size])
     attention_mask = torch.ones_like(input_ids, dtype=torch.bool)
@@ -227,7 +224,8 @@ def train(model,
           val_dataloader=None,
           progress_interval=100,
           val_interval=1000,
-          ):
+          dev_dataloaders=None,
+        ):
     raw_model = model.to(device)
     trainable_params = [p for p in raw_model.parameters() if p.requires_grad]
 
@@ -430,6 +428,12 @@ def train(model,
                         mu_rms = mu.pow(2).mean().sqrt().item()
                         std_rms = std.pow(2).mean().sqrt().item()
                         print(f"Variational stats at validation - mu_rms: {mu_rms:.4f}, std_rms: {std_rms:.4f}")
+                
+                if dev_dataloaders is not None:
+                    for dev_name, dev_loader in dev_dataloaders.items():
+                        avg_dev_loss, _ = validate(raw_model, dev_loader, device, device_type, use_amp)
+                        wandb.log({f"{dev_name}_loss": avg_dev_loss}, step=step)
+                        print(f"{dev_name} Loss: {avg_dev_loss:.4f}")
 
                 print(f"save parameters - progress {progress}")
                 save_model(raw_model, adapter_type, adapter_config, model_path+'-trace')
@@ -462,8 +466,12 @@ if __name__ == '__main__':
     parser.add_argument('--experiment_description', type=str, required=True, help='Experiment description for W&B')
 
     # Data source options: only pre-tokenized binary inputs are supported.
-    parser.add_argument('--token_bin', type=str, nargs='+', required=True,
+    parser.add_argument('--train_bin', type=str, nargs='+', required=True,
                         help='Path(s) to pre-tokenized .bin file(s) produced by data/prepare_dataset.py')
+    parser.add_argument('--dev_bin_paths', type=str, nargs='*', default=[],
+                        help='Path(s) to pre-tokenized .bin file(s). Used to monitor training progress on separate datasets (optional)')
+    parser.add_argument('--dev_bin_names', type=str, nargs='*', default=None,
+                        help='Optional name(s) for --dev_bin entries. Must match the number of --dev_bin paths.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility (default: 42)')
 
     # Optional parameters
@@ -502,7 +510,17 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    token_bin_paths = args.token_bin
+    train_bin_paths = args.train_bin
+    dev_bin_paths = args.dev_bin_paths
+    dev_bin_names = args.dev_bin_names
+
+    if dev_bin_names is not None:
+        if len(dev_bin_names) == 0 and len(dev_bin_paths) > 0:
+            parser.error("--dev_bin_names requires one name per --dev_bin_path")
+        if len(dev_bin_names) != len(dev_bin_paths):
+            parser.error("--dev_bin_names must have the same number of values as --dev_bin_paths")
+        if len(set(dev_bin_names)) != len(dev_bin_names):
+            parser.error("--dev_bin_name values must be unique")
 
     # Set random seed for reproducibility
     set_seed(args.seed)
@@ -615,12 +633,12 @@ if __name__ == '__main__':
                 lora_dropout=lora_dropout,
             )
 
-        print(f"Using pre-tokenized binary file(s): {token_bin_paths}")
+        print(f"Using pre-tokenized binary file(s): {train_bin_paths}")
         wechsel_config = None
         model, tokenizer = setup_model(model_name, adapter_type, adapter_config, num_tailor_layers, wechsel_config, tokenizer_path, freeze_lm_heads)
 
     # Create training dataset from pre-tokenized binary file(s)
-    print(f"Creating training dataset from pre-tokenized binary file(s): {token_bin_paths}")
+    print(f"Creating training dataset from pre-tokenized binary file(s): {train_bin_paths}")
     if prefix_length > 0 and adapter_type == 'layer_adapter':
         if context_size + prefix_length > model.config.n_positions:
             print(f"Context size + prefix length ({context_size + prefix_length}) exceeds model's maximum position embeddings ({model.config.n_positions})")
@@ -629,9 +647,9 @@ if __name__ == '__main__':
             print(f"New context size: {context_size}")
 
     # Split into train and validation if requested
-    train_datasets, val_datasets = [], []
-    for token_bin_path in token_bin_paths:
-        dataset = TokenBinDataset(token_bin_path, context_size=context_size, start_token=0, end_token=None)
+    train_datasets, val_datasets, dev_datasets = [], [], []
+    for train_bin_path in train_bin_paths:
+        dataset = TokenBinDataset(train_bin_path, context_size=context_size, start_token=0, end_token=None)
         if val_fraction > 0:
             total_size = len(dataset)
             val_size = int(total_size * val_fraction)
@@ -642,11 +660,23 @@ if __name__ == '__main__':
                 [train_size, val_size],
                 generator=torch.Generator().manual_seed(args.seed)
             )
-            print(f"Split {token_bin_path} into train ({train_size} chunks) and validation ({val_size} chunks)")
+            print(f"Split {train_bin_path} into train ({train_size} chunks) and validation ({val_size} chunks)")
             train_datasets.append(train_dataset)
             val_datasets.append(val_dataset)
         else:
             train_datasets.append(dataset)
+
+    for idx, dev_bin_path in enumerate(dev_bin_paths):
+        dataset = TokenBinDataset(dev_bin_path, context_size=context_size, start_token=0, end_token=None)
+        if dev_bin_names is not None:
+            dev_name = dev_bin_names[idx]
+        else:
+            base_name = os.path.basename(dev_bin_path)
+            dev_name = base_name if base_name else f"dev_{idx + 1}"
+            if any(existing_name == dev_name for existing_name, _ in dev_datasets):
+                dev_name = f"{dev_name}_{idx + 1}"
+        dev_datasets.append((dev_name, dataset))
+
     train_dataset = RollerCoasterDataset(train_datasets) if len(train_datasets) > 1 else train_datasets[0]
     val_dataset = RollerCoasterDataset(val_datasets) if len(val_datasets) > 1 else val_datasets[0] if val_datasets else None
     collate_fn = partial(token_bin_collate, context_size=context_size)
@@ -673,6 +703,22 @@ if __name__ == '__main__':
             shuffle=False, # no need to shuffle validation data
             pin_memory=True if device.type in ['cuda', 'mps'] else False
         )
+    dev_dataloaders = None
+    if dev_datasets:
+        print(f"Created {len(dev_datasets)} separate dev dataset(s) for monitoring training progress.")
+        dev_dataloaders = {
+            dev_name:
+            DataLoader(
+                dev_dataset,
+                batch_size,
+                collate_fn=collate_fn,
+                num_workers=num_workers,
+                persistent_workers=num_workers > 0,
+                shuffle=False, # no need to shuffle dev data
+                pin_memory=True if device.type in ['cuda', 'mps'] else False
+            )
+            for dev_name, dev_dataset in dev_datasets
+        } if dev_datasets else None
 
     model = train(model, 
                   train_dataloader, 
@@ -686,7 +732,8 @@ if __name__ == '__main__':
                   early_stopping_min_delta, 
                   val_dataloader, 
                   progress_interval,
-                  val_interval)
+                  val_interval,
+                  dev_dataloaders)
 
     save_model(model, adapter_type, adapter_config, model_path)
 
