@@ -477,6 +477,7 @@ if __name__ == '__main__':
     # Optional parameters
     parser.add_argument('--learning_rate', type=float, default=5e-5, help='Learning rate (default: 5e-5)')
     parser.add_argument('--batch_size', type=int, default=1, help='Batch size (default: 1)')
+    parser.add_argument('--dev_batch_size', type=int, default=4, help='Batch size for validation/dev datasets (default: 4)')
     parser.add_argument('--context_size', type=int, default=1024, help='Context size (default: 1024)')
     parser.add_argument('--num_workers', type=int, default=0, help='Number of workers for data loading (default: 0)')
     parser.add_argument('--adam_beta1', type=float, default=0.9, help='Adam beta1 (default: 0.9)')
@@ -562,6 +563,7 @@ if __name__ == '__main__':
     agg_representation_type = args.agg_representation_type
     agg_query_source = args.agg_query_source
     variational_modeling = args.variational_modeling
+    dev_batch_size = args.dev_batch_size
 
     current_date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     
@@ -599,6 +601,7 @@ if __name__ == '__main__':
         "agg_representation_type": agg_representation_type,
         "agg_query_source": agg_query_source,
         "variational_modeling": variational_modeling,
+        "dev_batch_size": dev_batch_size,
     })
 
     device = set_device()
@@ -710,7 +713,7 @@ if __name__ == '__main__':
             dev_name:
             DataLoader(
                 dev_dataset,
-                batch_size,
+                dev_batch_size,
                 collate_fn=collate_fn,
                 num_workers=num_workers,
                 persistent_workers=num_workers > 0,
