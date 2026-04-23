@@ -230,11 +230,6 @@ class LayerAdapter(torch.nn.Module):
         if self.variational_modeling:
             self.var_mean_proj = torch.nn.Linear(hs, hs)
             self.var_logvar_proj = torch.nn.Linear(hs, hs)
-            # Initialize variational projection layers to produce near-zero mean and logvar at the start of training
-            self.var_mean_proj.weight.data.zero_()
-            self.var_mean_proj.bias.data.zero_()
-            self.var_logvar_proj.weight.data.zero_()
-            self.var_logvar_proj.bias.data.zero_()
 
         self.layer_attention_metrics = {
             "avg_attention_to_each_layer": torch.zeros(nl),
