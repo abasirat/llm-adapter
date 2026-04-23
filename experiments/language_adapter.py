@@ -181,6 +181,49 @@ class WarmUpCosineDecayScheduler:
         """Get the current learning rate."""
         return self.optimizer.param_groups[0]['lr']
 
+class KLWeightScheduler:
+    def __init__(
+        self,
+        max_kl_weight: float,
+        warmup_steps: int,
+        schedule_type: str = "linear",
+        start_kl_weight: float = 0.0,
+    ):
+        self.max_kl_weight = max_kl_weight
+        self.warmup_steps = max(1, warmup_steps)
+        self.schedule_type = schedule_type
+        self.start_kl_weight = start_kl_weight
+        self.step_count = 0
+
+    def step(self):
+        self.step_count += 1
+
+    def get_weight(self):
+        progress = min(self.step_count / self.warmup_steps, 1.0)
+
+        if self.schedule_type == "linear":
+            weight = self.start_kl_weight + progress * (
+                self.max_kl_weight - self.start_kl_weight
+            )
+
+        elif self.schedule_type == "sigmoid":
+            # Smooth, slow start, faster middle, slow end
+            x = 12 * (progress - 0.5)
+            sigmoid = 1 / (1 + math.exp(-x))
+            weight = self.start_kl_weight + sigmoid * (
+                self.max_kl_weight - self.start_kl_weight
+            )
+
+        elif self.schedule_type == "cosine":
+            weight = self.start_kl_weight + (
+                0.5 * (1 - math.cos(math.pi * progress))
+            ) * (self.max_kl_weight - self.start_kl_weight)
+
+        else:
+            raise ValueError(f"Unknown KL schedule type: {self.schedule_type}")
+
+        return weight
+    
 def validate(model, val_dataloader, device, device_type, use_amp):
     """
     Perform validation on a dataset and compute average loss.
@@ -225,6 +268,9 @@ def train(model,
           progress_interval=100,
           val_interval=1000,
           dev_dataloaders=None,
+          kl_loss_weight=1e-2,
+          kl_warmup_fraction=0.2,
+          kl_schedule="linear",
         ):
     raw_model = model.to(device)
     trainable_params = [p for p in raw_model.parameters() if p.requires_grad]
@@ -248,9 +294,20 @@ def train(model,
         warmup_steps = int(.1 * total_steps)
         scheduler = WarmUpCosineDecayScheduler(optimizer, warmup_steps, total_steps, learning_rate)
         print(f"LR scheduler set up with {warmup_steps} warmup steps and {total_steps} total steps. Max LR: {learning_rate:.2e}.")
+
+        kl_warmup_steps = int(kl_warmup_fraction * total_steps)
+        kl_scheduler = KLWeightScheduler(
+            max_kl_weight=kl_loss_weight,
+            warmup_steps=kl_warmup_steps,
+            schedule_type=kl_schedule,
+            start_kl_weight=0.0,
+        )
+        print(f"KL scheduler set up with {kl_warmup_steps} warmup steps. Max KL weight: {kl_loss_weight:.2e}, schedule: {kl_schedule}")
     else:
         scheduler = None
+        kl_scheduler = None
         print("LR scheduler disabled (unknown dataloader length)")
+        print("KL scheduler disabled (unknown dataloader length)")
 
     device_type = device.type
     use_amp = False # device_type == "cuda" # AMP can cause instability for some models, so we disable it for now.  Can be re-enabled if desired.
@@ -277,7 +334,6 @@ def train(model,
         print("Early stopping disabled")
 
     step = 0
-    kl_loss_weight = 1e-2  # Weight for KL divergence loss when using variational modeling in layer_adapter
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0.0
@@ -299,7 +355,12 @@ def train(model,
             # If using layer_adapter with variational modeling, add KL divergence loss
             if adapter_type == 'layer_adapter' and variational_modeling:
                 kl_loss = raw_model.transformer.encoder.get_kl_loss()
-                loss += kl_loss_weight * kl_loss
+                current_kl_weight = (
+                    kl_scheduler.get_weight()
+                    if kl_scheduler is not None
+                    else kl_loss_weight
+                )
+                loss += current_kl_weight * kl_loss
                 acc_kl_loss.append(kl_loss.detach().float().item())
 
             if use_amp:
@@ -315,6 +376,9 @@ def train(model,
 
             if scheduler is not None:
                 scheduler.step()
+            
+            if kl_scheduler is not None:
+                kl_scheduler.step()
 
             batch_loss = loss.detach().float().item()
             total_loss += batch_loss
@@ -372,6 +436,10 @@ def train(model,
                         log_dict["variational/kl_var_term"] = kl_var_term.mean().item()
 
                         log_dict["variational/batch_kl_loss"] = avg_acc_kl_loss 
+
+                        log_dict["variational/kl_weight"] = (
+                            kl_scheduler.get_weight() if kl_scheduler is not None else kl_loss_weight
+                        )
 
                 wandb.log(log_dict, step=step)
 
@@ -488,6 +556,9 @@ if __name__ == '__main__':
     parser.add_argument('--val_fraction', type=float, default=0.0, help='Fraction of training data to use for validation (default: 0.0 = no validation, early stopping disabled)')
     parser.add_argument('--val_interval', type=int, default=1000, help='Number of training steps between validations (default: 1000)')
     parser.add_argument('--progress_interval', type=int, default=100, help='Number of training steps between progress updates (default: 100)')
+    parser.add_argument('--kl_loss_weight', type=float, default=1e-2, help='Maximum KL loss weight')
+    parser.add_argument('--kl_warmup_fraction', type=float, default=0.2, help='Fraction of training used for KL warmup')
+    parser.add_argument('--kl_schedule', type=str, default='linear', choices=['linear', 'sigmoid', 'cosine'], help='KL weight schedule')
 
     # LoRA parameters
     parser.add_argument('--lora_r', type=int, default=4, help='LoRA rank (r parameter) (default: 4)')
@@ -507,7 +578,7 @@ if __name__ == '__main__':
     parser.add_argument('--agg_representation_type', type=str, default='mid_mlp', choices=['pre_mlp', 'mid_mlp', 'post_mlp'], help='Type of representation to aggregate in layer_adapter (default: mid_mlp)')
     parser.add_argument('--agg_query_source', type=str, default='final_hidden', choices=["final_hidden", "top_repr"], help='Source of query for aggregation in layer_adapter (default: final_hidden)')
     parser.add_argument('--variational_modeling', action='store_true', help='Whether to use variational modeling in layer_adapter (default: False)')
-
+    #parser.add_argument('--variational_use_mean_in_eval', action='store_true', help='Whether to use mean in evaluation for variational modeling (default: False)')
 
     args = parser.parse_args()
 
@@ -564,6 +635,9 @@ if __name__ == '__main__':
     agg_query_source = args.agg_query_source
     variational_modeling = args.variational_modeling
     dev_batch_size = args.dev_batch_size
+    kl_loss_weight = args.kl_loss_weight
+    kl_warmup_fraction = args.kl_warmup_fraction
+    kl_schedule = args.kl_schedule
 
     current_date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     
@@ -736,7 +810,11 @@ if __name__ == '__main__':
                   val_dataloader, 
                   progress_interval,
                   val_interval,
-                  dev_dataloaders)
+                  dev_dataloaders, 
+                  kl_loss_weight,
+                  kl_warmup_fraction,
+                  kl_schedule,
+                )
 
     save_model(model, adapter_type, adapter_config, model_path)
 
