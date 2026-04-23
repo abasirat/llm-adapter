@@ -214,7 +214,7 @@ class LayerAdapter(torch.nn.Module):
         self.input_dropout = torch.nn.Dropout(dropout)
         self.output_dropout = torch.nn.Dropout(dropout)
 
-        self.adapter_scale = torch.nn.Parameter(torch.tensor(0.0))
+        #self.adapter_scale = torch.nn.Parameter(torch.tensor(0.0))
 
         # Variational settings
         self.variational_modeling = variational_modeling
@@ -230,6 +230,11 @@ class LayerAdapter(torch.nn.Module):
         if self.variational_modeling:
             self.var_mean_proj = torch.nn.Linear(hs, hs)
             self.var_logvar_proj = torch.nn.Linear(hs, hs)
+            # Initialize variational projection layers to produce near-zero mean and logvar at the start of training
+            self.var_mean_proj.weight.data.zero_()
+            self.var_mean_proj.bias.data.zero_()
+            self.var_logvar_proj.weight.data.zero_()
+            self.var_logvar_proj.bias.data.zero_()
 
         self.layer_attention_metrics = {
             "avg_attention_to_each_layer": torch.zeros(nl),
@@ -474,8 +479,8 @@ class LayerAdapter(torch.nn.Module):
             self.last_mu = None
             self.last_std = None
 
-        r = base_hidden_state + self.adapter_scale * delta
-        #r = base_hidden_state + delta
+        #r = base_hidden_state + self.adapter_scale * delta
+        r = base_hidden_state + delta
 
         if attn_weights is not None:
             attn_weights = attn_weights.mean(dim=1)   # (B*T, 1, L)
