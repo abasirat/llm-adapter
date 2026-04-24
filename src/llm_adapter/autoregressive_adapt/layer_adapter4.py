@@ -1,3 +1,5 @@
+import pdb
+
 import torch
 from typing import Optional, Tuple, Union
 from transformers.modeling_outputs import (
@@ -65,6 +67,12 @@ class LowDimQKMultiHeadAttention(torch.nn.Module):
         self.q_proj = torch.nn.Linear(input_dim_q, qk_dim, bias=bias)
         self.k_proj = torch.nn.Linear(input_dim_kv, qk_dim, bias=bias)
 
+        #self.v_proj = torch.nn.Sequential(
+        #    torch.nn.Linear(input_dim_v, 4 * input_dim_v, bias=bias),
+        #    torch.nn.GELU(),
+        #    torch.nn.Linear(4 * input_dim_v, input_dim_v, bias=bias),
+        #)
+
         concat_value_dim = num_heads * input_dim_v
         self.out_proj = torch.nn.Linear(concat_value_dim, output_dim, bias=bias)
 
@@ -87,6 +95,7 @@ class LowDimQKMultiHeadAttention(torch.nn.Module):
         Q_low = self.q_proj(Q).view(B, Tq, self.num_heads, self.head_qk_dim).transpose(1, 2)
         K_low = self.k_proj(K).view(B, Tk, self.num_heads, self.head_qk_dim).transpose(1, 2)
 
+        #V_proj = self.v_proj(V)
         # No V projection: repeat full value vector across heads
         V_full = V.unsqueeze(1).expand(B, self.num_heads, Tk, Dv)
 
@@ -185,6 +194,10 @@ class LayerAdapter(torch.nn.Module):
         self.mlp_dim = mlp_dim
         self.rep_dim = self._get_representation_dim(representation_type)
 
+        self.linear_aligners = torch.nn.ModuleList([
+            torch.nn.Linear(self.rep_dim, self.rep_dim) for _ in range(nl)
+        ])
+
         self.token_layer_attention = LowDimQKMultiHeadAttention(
             input_dim_q=hs,
             input_dim_kv=self.rep_dim,
@@ -226,6 +239,7 @@ class LayerAdapter(torch.nn.Module):
         self.last_kl_loss = None
         self.last_mu = None
         self.last_std = None
+        self.last_delta_loss = None
 
         if self.variational_modeling:
             self.var_mean_proj = torch.nn.Linear(hs, hs)
@@ -414,12 +428,15 @@ class LayerAdapter(torch.nn.Module):
 
         if self.kl_reduction == "sum":
             kl_loss = kl_per_dim.sum()
+            delta_loss = delta.pow(2).sum()
         else:
             kl_loss = kl_per_dim.sum() / denom
+            delta_loss = delta.pow(2).mean()
 
         self.last_mu = mu
         self.last_std = std
         self.last_kl_loss = kl_loss
+        self.last_delta_loss = delta_loss
 
         return delta, kl_loss
 
@@ -497,6 +514,11 @@ class LayerAdapter(torch.nn.Module):
         if self.last_kl_loss is None:
             raise RuntimeError("No forward pass has been run yet, so KL loss is unavailable.")
         return self.last_kl_loss
+
+    def get_delta_loss(self):
+        if self.last_delta_loss is None:
+            raise RuntimeError("No forward pass has been run yet, so delta loss is unavailable.")
+        return self.last_delta_loss
 
     def get_variational_stats(self):
         if not self.variational_modeling:
@@ -584,8 +606,10 @@ class LayerAdapter(torch.nn.Module):
             f"Expected {expected_n_layers} {self.representation_type} activations, got {got_n_layers}"
         )
 
+        # Align the representations into the same space
+        repr = tuple(self.linear_aligners[i](rep) for i, rep in enumerate(self.layer_representations))
         # (B, T, R, L)
-        reps = torch.stack(self.layer_representations, dim=-1)
+        reps = torch.stack(repr, dim=-1)
 
         if self.num_aggregation_layers is not None:
             reps = reps[..., -self.num_aggregation_layers:]
