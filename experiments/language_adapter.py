@@ -340,6 +340,7 @@ def train(model,
         num_batches = 0
         acc_loss = []
         acc_kl_loss = []
+        acc_delta_loss = []
 
         # Use progress bar without total if length is unknown
         progress_bar = tqdm(total=dataloader_len, desc="Processing")
@@ -360,9 +361,10 @@ def train(model,
                     if kl_scheduler is not None
                     else kl_loss_weight
                 )
-                loss += current_kl_weight * kl_loss
+                delta_loss = raw_model.transformer.encoder.get_delta_loss()
+                loss += current_kl_weight * kl_loss + current_kl_weight * delta_loss
                 acc_kl_loss.append(kl_loss.detach().float().item())
-
+                acc_delta_loss.append(delta_loss.detach().float().item())
             if use_amp:
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
@@ -392,12 +394,13 @@ def train(model,
                 running_loss = total_loss / num_batches
                 avg_acc_loss = sum(acc_loss) / len(acc_loss) if acc_loss else 0.0
                 avg_acc_kl_loss = sum(acc_kl_loss) / len(acc_kl_loss) if acc_kl_loss else 0.0
-
+                avg_acc_delta_loss = sum(acc_delta_loss) / len(acc_delta_loss) if acc_delta_loss else 0.0
                 description = (
                     f"running loss: {running_loss:.2f}, batch loss: {avg_acc_loss:.2f}"
                     + (f", LR: {scheduler.get_lr():.0e}" if scheduler else "")
                     + (f", best val loss: {best_val_loss:.2f}, patience: {patience_counter}/{early_stopping_patience}")
                     + (f", KL loss: {avg_acc_kl_loss:.4f}" if acc_kl_loss else "")
+                    + (f", Delta loss: {avg_acc_delta_loss:.4f}" if acc_delta_loss else "")
                 )
                 progress_bar.set_description(description)
 
@@ -440,6 +443,7 @@ def train(model,
                         log_dict["variational/kl_weight"] = (
                             kl_scheduler.get_weight() if kl_scheduler is not None else kl_loss_weight
                         )
+                        log_dict["variational/batch_delta_loss"] = avg_acc_delta_loss
 
                 wandb.log(log_dict, step=step)
 
@@ -471,7 +475,7 @@ def train(model,
 
                 acc_loss = []
                 acc_kl_loss = []
-
+                acc_delta_loss = []
             if (i + 1) % val_interval == 0: 
                 # Early stopping check (training-based, only if no validation set)
                 if val_dataloader is not None and early_stopping_patience > 0:

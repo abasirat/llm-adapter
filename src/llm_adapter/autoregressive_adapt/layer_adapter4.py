@@ -1,3 +1,5 @@
+import pdb
+
 import torch
 from typing import Optional, Tuple, Union
 from transformers.modeling_outputs import (
@@ -226,6 +228,7 @@ class LayerAdapter(torch.nn.Module):
         self.last_kl_loss = None
         self.last_mu = None
         self.last_std = None
+        self.last_delta_loss = None
 
         if self.variational_modeling:
             self.var_mean_proj = torch.nn.Linear(hs, hs)
@@ -414,12 +417,15 @@ class LayerAdapter(torch.nn.Module):
 
         if self.kl_reduction == "sum":
             kl_loss = kl_per_dim.sum()
+            delta_loss = delta.pow(2).sum()
         else:
             kl_loss = kl_per_dim.sum() / denom
+            delta_loss = delta.pow(2).mean()
 
         self.last_mu = mu
         self.last_std = std
         self.last_kl_loss = kl_loss
+        self.last_delta_loss = delta_loss
 
         return delta, kl_loss
 
@@ -497,6 +503,11 @@ class LayerAdapter(torch.nn.Module):
         if self.last_kl_loss is None:
             raise RuntimeError("No forward pass has been run yet, so KL loss is unavailable.")
         return self.last_kl_loss
+
+    def get_delta_loss(self):
+        if self.last_delta_loss is None:
+            raise RuntimeError("No forward pass has been run yet, so delta loss is unavailable.")
+        return self.last_delta_loss
 
     def get_variational_stats(self):
         if not self.variational_modeling:
