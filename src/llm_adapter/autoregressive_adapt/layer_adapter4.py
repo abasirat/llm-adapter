@@ -146,6 +146,7 @@ class LayerAdapter(torch.nn.Module):
         num_aggregation_layers=None,
         prefix_length=10,
         qk_dim=32,
+        v_dim=None,
         num_attention_heads=4,
         attention_temperature=2.0,
         representation_type="mid_mlp",
@@ -194,14 +195,15 @@ class LayerAdapter(torch.nn.Module):
         self.mlp_dim = mlp_dim
         self.rep_dim = self._get_representation_dim(representation_type)
 
+        v_dim = v_dim if v_dim is not None else self.rep_dim
         self.linear_aligners = torch.nn.ModuleList([
-            torch.nn.Linear(self.rep_dim, self.rep_dim) for _ in range(nl)
+            torch.nn.Linear(self.rep_dim, v_dim) for _ in range(nl)
         ])
 
         self.token_layer_attention = LowDimQKMultiHeadAttention(
             input_dim_q=hs,
-            input_dim_kv=self.rep_dim,
-            input_dim_v=self.rep_dim,
+            input_dim_kv=v_dim,
+            input_dim_v=v_dim,
             output_dim=hs,
             qk_dim=qk_dim,
             num_heads=num_attention_heads,
@@ -267,7 +269,7 @@ class LayerAdapter(torch.nn.Module):
             self.prefix_value = None
 
         self.query_layer_norm = torch.nn.LayerNorm(hs)
-        self.kv_layer_norm = torch.nn.LayerNorm(self.rep_dim)
+        self.kv_layer_norm = torch.nn.LayerNorm(v_dim)
 
         # Only needed when query_source == "top_repr" and rep_dim != hs
         self.query_from_repr_proj = (

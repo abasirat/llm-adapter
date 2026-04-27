@@ -575,7 +575,7 @@ if __name__ == '__main__':
     parser.add_argument('--prefix_length', type=int, default=0, help='Length of prefix embeddings for layer_adapter (default: 0 = no prefix)')
     parser.add_argument('--adjust_pre_mlps', action='store_true', help='Whether to adjust pre-MLP activations in layer_adapter (default: False)')
     parser.add_argument('--qk_dim', type=int, default=32, help='Dimension of Q and K in layer_adapter (default: 32)')
-    parser.add_argument('--v_dim', type=int, default=None, help='Dimension of V in layer_adapter (default: None = same as Q/K)')
+    parser.add_argument('--v_dim', type=int, default=None, help='Dimension of V in layer_adapter (default: None = same as the base model\'s internal dimension)')
     parser.add_argument('--num_attention_heads', type=int, default=4, help='Number of attention heads in layer_adapter (default: 4)')
     parser.add_argument('--attention_temperature', type=float, default=2.0, help='Temperature for attention in layer_adapter (default: 2.0)')
     parser.add_argument('--v_rank', type=int, default=0, help='Rank of V projection in layer_adapter (default: 0 = no low-rank projection)')
@@ -699,6 +699,7 @@ if __name__ == '__main__':
                 'num_aggregation_layers': num_aggregation_layers,
                 'prefix_length': prefix_length,
                 'qk_dim': qk_dim,
+                'v_dim': v_dim,
                 'num_attention_heads': num_attention_heads,
                 'attention_temperature': attention_temperature,
                 'representation_type': agg_representation_type,
