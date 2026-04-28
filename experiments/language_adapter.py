@@ -362,7 +362,8 @@ def train(model,
                     else kl_loss_weight
                 )
                 delta_loss = raw_model.transformer.encoder.get_delta_loss()
-                loss += current_kl_weight * kl_loss + current_kl_weight * delta_loss
+                loss += current_kl_weight * kl_loss 
+                #loss += current_kl_weight * delta_loss
                 acc_kl_loss.append(kl_loss.detach().float().item())
                 acc_delta_loss.append(delta_loss.detach().float().item())
             if use_amp:
