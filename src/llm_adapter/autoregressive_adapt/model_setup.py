@@ -1,6 +1,5 @@
 import torch
-#from .layer_adapter import LayerAdapter
-from .layer_adapter4 import LayerAdapter
+from .layer_adapter6 import LayerAdapter
 from transformers import AutoTokenizer, GPT2LMHeadModel
 from .language_tailor import LanguageAdapter
 from peft import get_peft_model
@@ -59,8 +58,8 @@ def setup_model(model_name='gpt2',
         param.requires_grad = False
     print_trainable_parameters(model, "Base Model Frozen")
 
-    if adapter_type == 'layer_adapter':
-        model.transformer = LayerAdapter(model.transformer, **adapter_config)
+    if adapter_type  == 'layer_adapter':
+        model.transformer = LayerAdapter(encoder=model.transformer, **adapter_config)
         dropout = adapter_config.get('dropout', 0.1)
         print_trainable_parameters(model, "Layer Adapted")
     elif adapter_type == 'lora':

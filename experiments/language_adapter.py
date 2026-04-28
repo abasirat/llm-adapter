@@ -412,38 +412,38 @@ def train(model,
                 if scheduler is not None:
                     log_dict["learning_rate"] = scheduler.get_lr()
 
-                if adapter_type == 'layer_adapter':
+                if adapter_type == 'layer_adapter' and aggregation_strategy == "attention":
                     #log_dict["residual_scaler"] = raw_model.transformer.encoder.adapter_scale.item()
 
                     layer_token_attentions = raw_model.transformer.encoder.layer_attention_metrics
                     ent_layer_attention = layer_token_attentions["entropy_of_layer_attention"].cpu().item()
                     log_dict["layer_attn/entropy"] = ent_layer_attention
 
-                    if variational_modeling:
-                        mu, std = raw_model.transformer.encoder.get_variational_stats()
-                        logvar = 2.0 * torch.log(std.clamp_min(1e-8))
+                if adapter_type == 'layer_adapter' and variational_modeling:
+                    mu, std = raw_model.transformer.encoder.get_variational_stats()
+                    logvar = 2.0 * torch.log(std.clamp_min(1e-8))
 
-                        log_dict["variational/mu_mean"] = mu.mean().item()
-                        log_dict["variational/mu_abs_mean"] = mu.abs().mean().item()
-                        log_dict["variational/mu_rms"] = mu.pow(2).mean().sqrt().item()
+                    log_dict["variational/mu_mean"] = mu.mean().item()
+                    log_dict["variational/mu_abs_mean"] = mu.abs().mean().item()
+                    log_dict["variational/mu_rms"] = mu.pow(2).mean().sqrt().item()
 
-                        log_dict["variational/std_mean"] = std.mean().item()
-                        log_dict["variational/std_std"] = std.std().item()
-                        log_dict["variational/std_min"] = std.min().item()
-                        log_dict["variational/std_max"] = std.max().item()
+                    log_dict["variational/std_mean"] = std.mean().item()
+                    log_dict["variational/std_std"] = std.std().item()
+                    log_dict["variational/std_min"] = std.min().item()
+                    log_dict["variational/std_max"] = std.max().item()
 
-                        kl_mu_term = 0.5 * mu.pow(2)
-                        kl_var_term = 0.5 * (std.pow(2) - 1.0 - logvar)
+                    kl_mu_term = 0.5 * mu.pow(2)
+                    kl_var_term = 0.5 * (std.pow(2) - 1.0 - logvar)
 
-                        log_dict["variational/kl_mu_term"] = kl_mu_term.mean().item()
-                        log_dict["variational/kl_var_term"] = kl_var_term.mean().item()
+                    log_dict["variational/kl_mu_term"] = kl_mu_term.mean().item()
+                    log_dict["variational/kl_var_term"] = kl_var_term.mean().item()
 
-                        log_dict["variational/batch_kl_loss"] = avg_acc_kl_loss 
+                    log_dict["variational/batch_kl_loss"] = avg_acc_kl_loss 
 
-                        log_dict["variational/kl_weight"] = (
-                            kl_scheduler.get_weight() if kl_scheduler is not None else kl_loss_weight
-                        )
-                        log_dict["variational/batch_delta_loss"] = avg_acc_delta_loss
+                    log_dict["variational/kl_weight"] = (
+                        kl_scheduler.get_weight() if kl_scheduler is not None else kl_loss_weight
+                    )
+                    log_dict["variational/batch_delta_loss"] = avg_acc_delta_loss
 
                 wandb.log(log_dict, step=step)
 
@@ -497,9 +497,12 @@ def train(model,
 
                     if adapter_type == 'layer_adapter' and variational_modeling:
                         mu, std = raw_model.transformer.encoder.get_variational_stats()
+                        logvar = 2.0 * torch.log(std.clamp_min(1e-8))
                         mu_rms = mu.pow(2).mean().sqrt().item()
                         std_rms = std.pow(2).mean().sqrt().item()
-                        print(f"Variational stats at validation - mu_rms: {mu_rms:.4f}, std_rms: {std_rms:.4f}")
+                        kl_mu_term = 0.5 * mu.pow(2)
+                        kl_var_term = 0.5 * (std.pow(2) - 1.0 - logvar)
+                        print(f"Variational stats at validation - mu_rms: {mu_rms:.4f}, std_rms: {std_rms:.4f}, kl_mu_term: {kl_mu_term.mean().item():.4f}, kl_var_term: {kl_var_term.mean().item():.4f}")
                 
                 if dev_dataloaders is not None:
                     for dev_name, dev_loader in dev_dataloaders.items():
@@ -582,6 +585,7 @@ if __name__ == '__main__':
     parser.add_argument('--agg_representation_type', type=str, default='mid_mlp', choices=['pre_mlp', 'mid_mlp', 'post_mlp'], help='Type of representation to aggregate in layer_adapter (default: mid_mlp)')
     parser.add_argument('--agg_query_source', type=str, default='final_hidden', choices=["final_hidden", "top_repr"], help='Source of query for aggregation in layer_adapter (default: final_hidden)')
     parser.add_argument('--variational_modeling', action='store_true', help='Whether to use variational modeling in layer_adapter (default: False)')
+    parser.add_argument('--aggregation_strategy', type=str, default='attention', choices=['attention', 'mean'], help='Strategy for aggregating layer representations in layer_adapter (default: attention)')
     #parser.add_argument('--variational_use_mean_in_eval', action='store_true', help='Whether to use mean in evaluation for variational modeling (default: False)')
 
     args = parser.parse_args()
@@ -642,6 +646,7 @@ if __name__ == '__main__':
     kl_loss_weight = args.kl_loss_weight
     kl_warmup_fraction = args.kl_warmup_fraction
     kl_schedule = args.kl_schedule
+    aggregation_strategy = args.aggregation_strategy
 
     current_date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     
@@ -680,6 +685,7 @@ if __name__ == '__main__':
         "agg_query_source": agg_query_source,
         "variational_modeling": variational_modeling,
         "dev_batch_size": dev_batch_size,
+        "aggregation_strategy": aggregation_strategy,
     })
 
     device = set_device()
@@ -705,6 +711,7 @@ if __name__ == '__main__':
                 'representation_type': agg_representation_type,
                 'query_source': agg_query_source,
                 'variational_modeling': variational_modeling,
+                'aggregation_strategy': aggregation_strategy,
             }
         elif adapter_type == 'lora':
             adapter_config = LoraConfig(

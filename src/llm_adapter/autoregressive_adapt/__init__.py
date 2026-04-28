@@ -7,7 +7,7 @@ from .model_setup import (
     print_trainable_parameters,
     train_tokenizer,
 )
-from .layer_adapter import LayerAdapter
+from .layer_adapter6 import LayerAdapter
 from .language_tailor import LanguageAdapter
 
 __all__ = [
