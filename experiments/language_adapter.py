@@ -585,7 +585,7 @@ if __name__ == '__main__':
     parser.add_argument('--agg_representation_type', type=str, default='mid_mlp', choices=['pre_mlp', 'mid_mlp', 'post_mlp'], help='Type of representation to aggregate in layer_adapter (default: mid_mlp)')
     parser.add_argument('--agg_query_source', type=str, default='final_hidden', choices=["final_hidden", "top_repr"], help='Source of query for aggregation in layer_adapter (default: final_hidden)')
     parser.add_argument('--variational_modeling', action='store_true', help='Whether to use variational modeling in layer_adapter (default: False)')
-    parser.add_argument('--aggregation_strategy', type=str, default='attention', choices=['attention', 'mean'], help='Strategy for aggregating layer representations in layer_adapter (default: attention)')
+    parser.add_argument('--aggregation_strategy', type=str, default='attention', choices=['attention', 'mean', 'concat'], help='Strategy for aggregating layer representations in layer_adapter (default: attention)')
     #parser.add_argument('--variational_use_mean_in_eval', action='store_true', help='Whether to use mean in evaluation for variational modeling (default: False)')
 
     args = parser.parse_args()

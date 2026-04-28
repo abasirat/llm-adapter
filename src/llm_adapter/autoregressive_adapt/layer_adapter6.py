@@ -412,6 +412,75 @@ class MeanLayerAggregator(torch.nn.Module):
 
         return deterministic_delta, None
 
+class ConcatLayerAggregator(torch.nn.Module):
+    def __init__(
+        self,
+        hidden_size,
+        rep_dim,
+        num_layers,
+        dropout=0.1,
+        v_dim=None,
+    ):
+        super().__init__()
+
+        self.hidden_size = hidden_size
+        self.rep_dim = rep_dim
+        self.num_layers = num_layers
+        self.v_dim = v_dim if v_dim is not None else rep_dim
+
+        self.linear_aligners = torch.nn.ModuleList([
+            torch.nn.Linear(rep_dim, self.v_dim) for _ in range(num_layers)
+        ])
+
+        self.dropout = torch.nn.Dropout(dropout)
+
+        self.output_proj = torch.nn.Linear(
+            self.num_layers * self.v_dim,
+            hidden_size,
+        )
+
+    def forward(
+        self,
+        base_hidden_state,
+        layer_representations,
+        key_padding_mask=None,
+    ):
+        """
+        base_hidden_state:     (B, T, D)
+        layer_representations: tuple/list of L tensors, each (B, T, R)
+
+        returns:
+            deterministic_delta: (B, T, D)
+            attn_weights:        None
+        """
+        if len(layer_representations) != self.num_layers:
+            raise ValueError(
+                f"Expected {self.num_layers} layer representations, "
+                f"got {len(layer_representations)}"
+            )
+
+        aligned = [
+            self.linear_aligners[i](rep)
+            for i, rep in enumerate(layer_representations)
+        ]
+
+        # List of L tensors, each (B, T, V)
+        # Concatenate across representation dimension:
+        # (B, T, V * L)
+        concat_reps = torch.cat(aligned, dim=-1)
+
+        concat_reps = self.dropout(concat_reps)
+
+        # (B, T, V * L) -> (B, T, D)
+        deterministic_delta = self.output_proj(concat_reps)
+
+        if key_padding_mask is not None:
+            deterministic_delta = deterministic_delta.masked_fill(
+                key_padding_mask.unsqueeze(-1),
+                0.0,
+            )
+
+        return deterministic_delta, None
 
 class LayerAdapter(torch.nn.Module):
     """
@@ -431,7 +500,7 @@ class LayerAdapter(torch.nn.Module):
 
     VALID_REPRESENTATIONS = {"pre_mlp", "mid_mlp", "post_mlp"}
     VALID_QUERY_SOURCES = {"final_hidden", "top_repr"}
-    VALID_AGGREGATORS = {"attention", "mean"}
+    VALID_AGGREGATORS = {"attention", "mean", "concat"}
 
     def __init__(
         self,
@@ -516,6 +585,14 @@ class LayerAdapter(torch.nn.Module):
 
         elif aggregation_strategy == "mean":
             self.aggregator = MeanLayerAggregator(
+                hidden_size=hs,
+                rep_dim=self.rep_dim,
+                num_layers=nl,
+                dropout=dropout,
+                v_dim=v_dim,
+            )
+        elif aggregation_strategy == "concat":
+            self.aggregator = ConcatLayerAggregator(
                 hidden_size=hs,
                 rep_dim=self.rep_dim,
                 num_layers=nl,
