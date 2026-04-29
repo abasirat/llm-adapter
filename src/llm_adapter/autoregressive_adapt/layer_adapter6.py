@@ -138,7 +138,6 @@ class VariationalDeltaHead(torch.nn.Module):
         self.logvar_proj = torch.nn.Linear(hidden_size, hidden_size)
 
         self.last_kl_loss = None
-        self.last_delta_loss = None
         self.last_mu = None
         self.last_std = None
 
@@ -177,15 +176,12 @@ class VariationalDeltaHead(torch.nn.Module):
 
         if self.kl_reduction == "sum":
             kl_loss = kl_per_dim.sum()
-            delta_loss = delta.pow(2).sum()
         else:
             kl_loss = kl_per_dim.sum() / denom
-            delta_loss = delta.pow(2).mean()
 
         self.last_mu = mu
         self.last_std = std
         self.last_kl_loss = kl_loss
-        self.last_delta_loss = delta_loss
 
         return delta
 
@@ -193,11 +189,6 @@ class VariationalDeltaHead(torch.nn.Module):
         if self.last_kl_loss is None:
             raise RuntimeError("No forward pass has been run yet.")
         return self.last_kl_loss
-
-    def get_delta_loss(self):
-        if self.last_delta_loss is None:
-            raise RuntimeError("No forward pass has been run yet.")
-        return self.last_delta_loss
 
     def get_variational_stats(self):
         if self.last_mu is None or self.last_std is None:
@@ -238,8 +229,8 @@ class LayerAttentionAggregator(torch.nn.Module):
         self.v_dim = v_dim if v_dim is not None else rep_dim
 
         self.linear_aligners = torch.nn.ModuleList([
-            #torch.nn.Linear(rep_dim, self.v_dim) for _ in range(num_layers)
-            LowRankLinear(rep_dim, rep_dim, 32) for _ in range(num_layers)
+            torch.nn.Linear(rep_dim, self.v_dim) for _ in range(num_layers)
+            #LowRankLinear(rep_dim, rep_dim, 32) for _ in range(num_layers)
         ])
 
         self.input_dropout = torch.nn.Dropout(dropout)
@@ -562,6 +553,8 @@ class LayerAdapter(torch.nn.Module):
         self.query_source = query_source
         self.aggregation_strategy = aggregation_strategy
         self.need_weights = need_weights
+        
+        self.delta_loss = None
 
         self.rep_dim = self._get_representation_dim(representation_type)
 
@@ -780,14 +773,15 @@ class LayerAdapter(torch.nn.Module):
         return self.variational_head.get_kl_loss()
 
     def get_delta_loss(self):
-        if self.variational_head is None:
-            raise RuntimeError("Variational modeling is disabled.")
-        return self.variational_head.get_delta_loss()
+        if self.last_delta is None:
+            raise RuntimeError("No forward pass has been run yet.")
+        return self.last_delta.pow(2).mean()
 
     def get_variational_stats(self):
         if self.variational_head is None:
             raise RuntimeError("Variational modeling is disabled.")
         return self.variational_head.get_variational_stats()
+
 
     def forward_gpt(
         self,
@@ -892,6 +886,8 @@ class LayerAdapter(torch.nn.Module):
             )
         else:
             delta = deterministic_delta
+        
+        self.last_delta = delta
 
         aggregated_hidden_state = encoder_outputs.last_hidden_state + delta
 

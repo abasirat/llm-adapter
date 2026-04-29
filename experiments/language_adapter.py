@@ -353,6 +353,11 @@ def train(model,
             outputs = model(**batch)
             loss = outputs.loss
 
+            delta_loss = raw_model.transformer.encoder.get_delta_loss()
+            loss += delta_loss
+            acc_delta_loss.append(delta_loss.detach().float().item())
+
+
             # If using layer_adapter with variational modeling, add KL divergence loss
             if adapter_type == 'layer_adapter' and variational_modeling:
                 kl_loss = raw_model.transformer.encoder.get_kl_loss()
@@ -361,11 +366,10 @@ def train(model,
                     if kl_scheduler is not None
                     else kl_loss_weight
                 )
-                delta_loss = raw_model.transformer.encoder.get_delta_loss()
+                
                 loss += current_kl_weight * kl_loss 
-                #loss += current_kl_weight * delta_loss
                 acc_kl_loss.append(kl_loss.detach().float().item())
-                acc_delta_loss.append(delta_loss.detach().float().item())
+                
             if use_amp:
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
@@ -444,7 +448,7 @@ def train(model,
                     log_dict["variational/kl_weight"] = (
                         kl_scheduler.get_weight() if kl_scheduler is not None else kl_loss_weight
                     )
-                    log_dict["variational/batch_delta_loss"] = avg_acc_delta_loss
+                    #log_dict["variational/batch_delta_loss"] = avg_acc_delta_loss
 
                 wandb.log(log_dict, step=step)
 
@@ -471,8 +475,10 @@ def train(model,
                             "layer",
                             "attention",
                             title="Layer Attention Distribution"
-                        )
+                        ), 
+                        "batch_delta_loss": avg_acc_delta_loss,
                     }, step=step)
+
 
                 acc_loss = []
                 acc_kl_loss = []
