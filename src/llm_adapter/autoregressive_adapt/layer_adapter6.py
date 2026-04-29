@@ -238,7 +238,8 @@ class LayerAttentionAggregator(torch.nn.Module):
         self.v_dim = v_dim if v_dim is not None else rep_dim
 
         self.linear_aligners = torch.nn.ModuleList([
-            torch.nn.Linear(rep_dim, self.v_dim) for _ in range(num_layers)
+            #torch.nn.Linear(rep_dim, self.v_dim) for _ in range(num_layers)
+            LowRankLinear(rep_dim, rep_dim, 32) for _ in range(num_layers)
         ])
 
         self.input_dropout = torch.nn.Dropout(dropout)
