@@ -310,17 +310,17 @@ def train(model,
         print("KL scheduler disabled (unknown dataloader length)")
 
     device_type = device.type
-    use_amp = False # device_type == "cuda" # AMP can cause instability for some models, so we disable it for now.  Can be re-enabled if desired.
+    use_amp = device_type == "cuda" 
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     # Compile the model for faster forward passes
-    #try:
-    #    model = torch.compile(raw_model, backend="auto", mode="default")
-    #    print(f"Model compiled successfully on {device_type}")
-    #except Exception as e:
-    #    print(f"torch.compile() not available or failed: {e}. Training with standard model.")
-    #    model = raw_model
-    model = raw_model
+    try:
+        model = torch.compile(raw_model, backend="auto", mode="default")
+        print(f"Model compiled successfully on {device_type}")
+    except Exception as e:
+        print(f"torch.compile() not available or failed: {e}. Training with standard model.")
+        model = raw_model
+    #model = raw_model
 
     # Early stopping setup
     best_val_loss = float('inf')
@@ -349,8 +349,8 @@ def train(model,
 
             optimizer.zero_grad(set_to_none=True)
 
-            #with torch.autocast(device_type=device_type, dtype=torch.float16, enabled=use_amp):
-            outputs = model(**batch)
+            with torch.autocast(device_type=device_type, dtype=torch.float16, enabled=use_amp):
+                outputs = model(**batch)
             loss = outputs.loss
 
             delta_loss = raw_model.transformer.encoder.get_delta_loss()
