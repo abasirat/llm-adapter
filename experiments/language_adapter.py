@@ -353,9 +353,10 @@ def train(model,
                 outputs = model(**batch)
             loss = outputs.loss
 
-            delta_loss = raw_model.transformer.encoder.get_delta_loss()
-            loss += delta_loss
-            acc_delta_loss.append(delta_loss.detach().float().item())
+            if adapter_type == 'layer_adapter':
+                delta_loss = raw_model.transformer.encoder.get_delta_loss()
+                loss += delta_loss
+                acc_delta_loss.append(delta_loss.detach().float().item())
 
 
             # If using layer_adapter with variational modeling, add KL divergence loss
