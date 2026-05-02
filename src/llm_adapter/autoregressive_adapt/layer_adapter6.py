@@ -838,7 +838,7 @@ class LayerAdapter(torch.nn.Module):
         self.layer_representations = []
 
         with torch.no_grad():
-            self.encoder.to(device=device, dtype=dtype)
+            #self.encoder.to(device=device, dtype=dtype)
             encoder_outputs = self.encoder(
                 input_ids=input_ids,
                 past_key_values=past_key_values,
@@ -855,7 +855,7 @@ class LayerAdapter(torch.nn.Module):
                 return_dict=return_dict if return_dict is not None else True,
                 cache_position=cache_position,
             )
-            self.encoder.cpu() # Free up GPU memory after forward pass
+            #self.encoder.cpu() # Free up GPU memory after forward pass
 
         expected_n_layers = self.config.n_layer
         got_n_layers = len(self.layer_representations)
