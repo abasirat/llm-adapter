@@ -341,10 +341,11 @@ def train(model,
         acc_loss = []
         acc_kl_loss = []
         acc_delta_loss = []
+        progress = 0
 
         # Use progress bar without total if length is unknown
         progress_bar = tqdm(total=dataloader_len, desc="Processing")
-        for i, (batch, progress) in enumerate(train_dataloader):
+        for i, (batch, _) in enumerate(train_dataloader):
             batch = {k:v.to(device) for k,v in batch.items()}
 
             optimizer.zero_grad(set_to_none=True)
@@ -394,15 +395,19 @@ def train(model,
             acc_loss.append(batch_loss)
 
             step += 1
-            progress_bar.update(progress if progress else 1)
+            progress += 1
+            #progress_bar.update(progress if progress else 1)
     
-            if (i + 1) % progress_interval == 0:
+            if (i + 1) % progress_interval == 0 or (dataloader_len is not None and i + 1 >= dataloader_len):
+                progress_bar.update(progress)
+                progress = 0
+                
                 running_loss = total_loss / num_batches
                 avg_acc_loss = sum(acc_loss) / len(acc_loss) if acc_loss else 0.0
                 avg_acc_kl_loss = sum(acc_kl_loss) / len(acc_kl_loss) if acc_kl_loss else 0.0
                 avg_acc_delta_loss = sum(acc_delta_loss) / len(acc_delta_loss) if acc_delta_loss else 0.0
                 description = (
-                    f"running loss: {running_loss:.2f}, batch loss: {avg_acc_loss:.2f}"
+                    f"batch loss: {avg_acc_loss:.2f}"
                     + (f", LR: {scheduler.get_lr():.0e}" if scheduler else "")
                     + (f", best val loss: {best_val_loss:.2f}, patience: {patience_counter}/{early_stopping_patience}")
                     + (f", KL loss: {avg_acc_kl_loss:.4f}" if acc_kl_loss else "")
