@@ -637,7 +637,7 @@ class LayerAdapter(torch.nn.Module):
             raise NotImplementedError(
                 "This implementation works only with standard GPT and BERT families from HuggingFace."
             )
-        print(self)
+        #print(self)
 
     def _get_representation_dim(self, representation_type):
         if representation_type in {"pre_mlp", "post_mlp"}:

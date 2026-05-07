@@ -158,10 +158,10 @@ def load_model(param_path, tokenizer_path=None):
     missing, unexpected = model.load_state_dict(saved_params["learnable_params"], strict=False)
 
     print(f"Parameters loaded from {param_path}")
-    if missing:
-        print("Missing keys:", missing)
-    if unexpected:
-        print("Unexpected keys:", unexpected)
+    #if missing:
+    #    print("Missing keys:", missing)
+    #if unexpected:
+    #    print("Unexpected keys:", unexpected)
 
     return model, tokenizer, adapter_config
 
