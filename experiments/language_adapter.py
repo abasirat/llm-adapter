@@ -223,6 +223,21 @@ class KLWeightScheduler:
             raise ValueError(f"Unknown KL schedule type: {self.schedule_type}")
 
         return weight
+
+class LinearTemperatureScheduler:
+    def __init__(self, max_temperature: float, min_temperature: float, warmup_steps: int):
+        self.max_temperature = max_temperature
+        self.min_temperature = min_temperature
+        self.warmup_steps = max(1, warmup_steps)
+        self.step_count = 0
+
+    def step(self):
+        self.step_count += 1
+
+    def get_temperature(self):
+        progress = min(self.step_count / self.warmup_steps, 1.0)
+        temperature = self.max_temperature - progress * (self.max_temperature - self.min_temperature)
+        return temperature
     
 def validate(model, val_dataloader, device, device_type, use_amp):
     """
@@ -272,6 +287,9 @@ def train(model,
           kl_warmup_fraction=0.2,
           kl_schedule="linear",
           shift_regularization=False,
+          layer_adapter_max_temperature=1.0,
+          layer_adapter_min_temperature=0.8,
+          aggregation_strategy="attention",
         ):
     raw_model = model.to(device)
     trainable_params = [p for p in raw_model.parameters() if p.requires_grad]
@@ -309,6 +327,12 @@ def train(model,
         kl_scheduler = None
         print("LR scheduler disabled (unknown dataloader length)")
         print("KL scheduler disabled (unknown dataloader length)")
+    
+    layer_adapter_temp_scheduler = LinearTemperatureScheduler(
+        max_temperature=layer_adapter_max_temperature,
+        min_temperature=layer_adapter_min_temperature,
+        warmup_steps=total_steps // 10 if total_steps else 100
+    )
 
     device_type = device.type
     use_amp = device_type == "cuda" 
@@ -343,6 +367,7 @@ def train(model,
         acc_kl_loss = []
         acc_shift_loss = []
         progress = 0
+        current_temperature = None
 
         # Use progress bar without total if length is unknown
         progress_bar = tqdm(total=dataloader_len, desc="Processing")
@@ -360,6 +385,14 @@ def train(model,
                 if shift_regularization:
                     loss += shift_loss
                 acc_shift_loss.append(shift_loss.detach().float().item())
+            
+            if adapter_type == 'layer_adapter' and aggregation_strategy == "attention":
+                layer_adapter_temp_scheduler.step()
+                current_temperature = layer_adapter_temp_scheduler.get_temperature()
+                raw_model.transformer.encoder.set_attention_temperature(current_temperature)
+
+                # update the adapter config with the current temperature for saving (and then loading) the model
+                adapter_config['lattention_temperature'] = current_temperature
 
 
             # If using layer_adapter with variational modeling, add KL divergence loss
@@ -414,6 +447,7 @@ def train(model,
                     + (f", best val loss: {best_val_loss:.2f}, patience: {patience_counter}/{early_stopping_patience}")
                     + (f", KL loss: {avg_acc_kl_loss:.4f}" if acc_kl_loss else "")
                     + (f", Shift loss: {avg_acc_shift_loss:.4f}" if acc_shift_loss else "")
+                    + (f", Temp: {current_temperature:.2f}" if current_temperature is not None else "")
                 )
                 progress_bar.set_description(description)
 
@@ -431,6 +465,8 @@ def train(model,
                     layer_token_attentions = raw_model.transformer.encoder.layer_attention_metrics
                     ent_layer_attention = layer_token_attentions["entropy_of_layer_attention"].cpu().item()
                     log_dict["layer_attn/entropy"] = ent_layer_attention
+
+                    log_dict["layer_attn/temperature"] = current_temperature
 
                 if adapter_type == 'layer_adapter' and variational_modeling:
                     mu, std = raw_model.transformer.encoder.get_variational_stats()
@@ -844,7 +880,10 @@ if __name__ == '__main__':
                   kl_loss_weight,
                   kl_warmup_fraction,
                   kl_schedule,
-                  shift_regularization
+                  shift_regularization,
+                  attention_temperature,
+                  0.8,
+                  aggregation_strategy
                 )
 
     save_model(model, adapter_type, adapter_config, model_path)

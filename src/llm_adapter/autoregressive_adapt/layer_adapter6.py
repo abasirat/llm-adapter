@@ -77,7 +77,7 @@ class LowDimQKMultiHeadAttention(torch.nn.Module):
 
         self.attn_dropout = torch.nn.Dropout(dropout)
 
-    def forward(self, Q, K, V, key_padding_mask=None, need_weights=False):
+    def forward(self, Q, K, V, key_padding_mask=None, need_weights=False, temperature=None):
         """
         Q: (B, Tq, Dq)
         K: (B, Tk, Dk)
@@ -99,7 +99,8 @@ class LowDimQKMultiHeadAttention(torch.nn.Module):
         V_full = V.unsqueeze(1).expand(B, self.num_heads, Tk, Dv)
 
         scale = self.head_qk_dim ** 0.5
-        scores = torch.matmul(Q_low, K_low.transpose(-2, -1)) / scale / self.temperature
+        temperature = self.temperature if temperature is None else temperature
+        scores = torch.matmul(Q_low, K_low.transpose(-2, -1)) / scale / temperature
         scores = scores.masked_fill(torch.isnan(scores), float("-inf"))
 
         if key_padding_mask is not None:
@@ -781,6 +782,11 @@ class LayerAdapter(torch.nn.Module):
         if self.variational_head is None:
             raise RuntimeError("Variational modeling is disabled.")
         return self.variational_head.get_variational_stats()
+
+    def set_attention_temperature(self, temperature):
+        if not isinstance(self.aggregator, LayerAttentionAggregator):
+            raise RuntimeError("Attention temperature can only be set for attention-based aggregator.")
+        self.aggregator.token_layer_attention.temperature = temperature
 
 
     def forward_gpt(
