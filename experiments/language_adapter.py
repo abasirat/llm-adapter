@@ -271,6 +271,7 @@ def train(model,
           kl_loss_weight=1e-2,
           kl_warmup_fraction=0.2,
           kl_schedule="linear",
+          shift_regularization=False,
         ):
     raw_model = model.to(device)
     trainable_params = [p for p in raw_model.parameters() if p.requires_grad]
@@ -340,7 +341,7 @@ def train(model,
         num_batches = 0
         acc_loss = []
         acc_kl_loss = []
-        acc_delta_loss = []
+        acc_shift_loss = []
         progress = 0
 
         # Use progress bar without total if length is unknown
@@ -357,7 +358,12 @@ def train(model,
             if adapter_type == 'layer_adapter':
                 delta_loss = raw_model.transformer.encoder.get_delta_loss()
                 loss += delta_loss
-                acc_delta_loss.append(delta_loss.detach().float().item())
+                acc_shift_loss.append(delta_loss.detach().float().item())
+
+            if shift_regularization and adapter_type == 'layer_adapter':
+                shift_loss = raw_model.transformer.encoder.get_shift_loss()
+                loss += shift_loss
+                acc_shift_loss.append(shift_loss.detach().float().item())
 
 
             # If using layer_adapter with variational modeling, add KL divergence loss
@@ -405,13 +411,13 @@ def train(model,
                 running_loss = total_loss / num_batches
                 avg_acc_loss = sum(acc_loss) / len(acc_loss) if acc_loss else 0.0
                 avg_acc_kl_loss = sum(acc_kl_loss) / len(acc_kl_loss) if acc_kl_loss else 0.0
-                avg_acc_delta_loss = sum(acc_delta_loss) / len(acc_delta_loss) if acc_delta_loss else 0.0
+                avg_acc_shift_loss = sum(acc_shift_loss) / len(acc_shift_loss) if acc_shift_loss else 0.0
                 description = (
                     f"batch loss: {avg_acc_loss:.2f}"
                     + (f", LR: {scheduler.get_lr():.0e}" if scheduler else "")
                     + (f", best val loss: {best_val_loss:.2f}, patience: {patience_counter}/{early_stopping_patience}")
                     + (f", KL loss: {avg_acc_kl_loss:.4f}" if acc_kl_loss else "")
-                    + (f", Delta loss: {avg_acc_delta_loss:.4f}" if acc_delta_loss else "")
+                    + (f", Shift loss: {avg_acc_shift_loss:.4f}" if acc_shift_loss else "")
                 )
                 progress_bar.set_description(description)
 
@@ -454,7 +460,7 @@ def train(model,
                     log_dict["variational/kl_weight"] = (
                         kl_scheduler.get_weight() if kl_scheduler is not None else kl_loss_weight
                     )
-                    #log_dict["variational/batch_delta_loss"] = avg_acc_delta_loss
+                    #log_dict["variational/batch_shift_loss"] = avg_acc_shift_loss
 
                 wandb.log(log_dict, step=step)
 
@@ -482,13 +488,13 @@ def train(model,
                             "attention",
                             title="Layer Attention Distribution"
                         ), 
-                        "batch_delta_loss": avg_acc_delta_loss,
+                        "batch_shift_loss": avg_acc_shift_loss,
                     }, step=step)
 
 
                 acc_loss = []
                 acc_kl_loss = []
-                acc_delta_loss = []
+                acc_shift_loss = []
             if (i + 1) % val_interval == 0: 
                 # Early stopping check (training-based, only if no validation set)
                 if val_dataloader is not None and early_stopping_patience > 0:
@@ -600,6 +606,7 @@ if __name__ == '__main__':
     parser.add_argument('--variational_modeling', action='store_true', help='Whether to use variational modeling in layer_adapter (default: False)')
     parser.add_argument('--aggregation_strategy', type=str, default='attention', choices=['attention', 'mean', 'concat'], help='Strategy for aggregating layer representations in layer_adapter (default: attention)')
     #parser.add_argument('--variational_use_mean_in_eval', action='store_true', help='Whether to use mean in evaluation for variational modeling (default: False)')
+    parser.add_argument('--shift_regularization', action='store_true', help='Whether to apply regularization to the shift in layer_adapter (default: False)')
 
     args = parser.parse_args()
 
@@ -660,6 +667,7 @@ if __name__ == '__main__':
     kl_warmup_fraction = args.kl_warmup_fraction
     kl_schedule = args.kl_schedule
     aggregation_strategy = args.aggregation_strategy
+    shift_regularization = args.shift_regularization
 
     current_date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     
@@ -699,6 +707,7 @@ if __name__ == '__main__':
         "variational_modeling": variational_modeling,
         "dev_batch_size": dev_batch_size,
         "aggregation_strategy": aggregation_strategy,
+        "shift_regularization": shift_regularization,
     })
 
     device = set_device()
@@ -839,6 +848,7 @@ if __name__ == '__main__':
                   kl_loss_weight,
                   kl_warmup_fraction,
                   kl_schedule,
+                  shift_regularization
                 )
 
     save_model(model, adapter_type, adapter_config, model_path)
