@@ -355,11 +355,6 @@ def train(model,
                 outputs = model(**batch)
             loss = outputs.loss
 
-            if adapter_type == 'layer_adapter':
-                delta_loss = raw_model.transformer.encoder.get_delta_loss()
-                loss += delta_loss
-                acc_shift_loss.append(delta_loss.detach().float().item())
-
             if shift_regularization and adapter_type == 'layer_adapter':
                 shift_loss = raw_model.transformer.encoder.get_delta_loss()
                 loss += shift_loss
