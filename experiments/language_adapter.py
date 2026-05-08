@@ -361,7 +361,7 @@ def train(model,
                 acc_shift_loss.append(delta_loss.detach().float().item())
 
             if shift_regularization and adapter_type == 'layer_adapter':
-                shift_loss = raw_model.transformer.encoder.get_shift_loss()
+                shift_loss = raw_model.transformer.encoder.get_delta_loss()
                 loss += shift_loss
                 acc_shift_loss.append(shift_loss.detach().float().item())
 
@@ -472,7 +472,7 @@ def train(model,
                     nl = len(avg_layer_attention)
 
                     avg_layer_attention_data = [
-                        [f"layer_{layer_idx}", avg_layer_attention[layer_idx - n_layer + nl - 1]]
+                        [layer_idx, avg_layer_attention[layer_idx - n_layer + nl - 1]]
                         for layer_idx in range(n_layer, n_layer - nl, -1)
                     ]
 
