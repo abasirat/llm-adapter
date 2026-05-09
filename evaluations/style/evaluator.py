@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional
 import joblib
 import numpy as np
 import torch
+from sklearn.metrics import f1_score, precision_score, recall_score
 from tqdm import tqdm
 
 from evaluations.utils import load_model
@@ -285,12 +286,21 @@ def _score_condition(
     prompts: List[str],
     texts: List[str],
     condition: str,
+    expected_label: int,
 ) -> Dict[str, Any]:
-    """Classify texts and return per-condition metrics plus per-example results."""
+    """Classify texts and return per-condition metrics plus per-example results.
+
+    Args:
+        expected_label: The ground-truth class for all texts in this condition.
+                        1 for the legal condition, 0 for the general condition.
+                        Used to compute precision, recall, and F1.
+    """
     probs = clf.predict_proba(texts)
     general_probs = probs[:, 0].tolist()
     legal_probs   = probs[:, 1].tolist()
     preds = clf.predict(texts).tolist()
+
+    true_labels = [expected_label] * len(preds)
 
     results = [
         {
@@ -310,6 +320,9 @@ def _score_condition(
         "mean_general_style_score": float(np.mean(general_probs)),
         "median_general_style_score": float(np.median(general_probs)),
         "predicted_legal_rate": float(np.mean(preds)),
+        "precision": float(precision_score(true_labels, preds, pos_label=expected_label, zero_division=0)),
+        "recall":    float(recall_score(   true_labels, preds, pos_label=expected_label, zero_division=0)),
+        "f1":        float(f1_score(       true_labels, preds, pos_label=expected_label, zero_division=0)),
         "num_examples": len(texts),
         "results": results,
     }
@@ -363,10 +376,16 @@ def evaluate(
             legal_mean_legal_style_score
             legal_mean_general_style_score
             legal_predicted_legal_rate
+            legal_precision    – precision for legal class on legal-prompt outputs
+            legal_recall       – recall for legal class on legal-prompt outputs
+            legal_f1           – F1 for legal class on legal-prompt outputs
             legal_num_examples
             general_mean_legal_style_score
             general_mean_general_style_score
             general_predicted_general_rate
+            general_precision  – precision for general class on general-prompt outputs
+            general_recall     – recall for general class on general-prompt outputs
+            general_f1         – F1 for general class on general-prompt outputs
             general_num_examples
     """
     clf = _load_classifier(Path(clf_path) if clf_path else _CLF_PATH)
@@ -382,19 +401,25 @@ def evaluate(
     legal_texts   = _generate_texts(model, tokenizer, active_legal,   device, min_new_tokens, max_new_tokens, desc="Style (legal prompts)")
     general_texts = _generate_texts(model, tokenizer, active_general, device, min_new_tokens, max_new_tokens, desc="Style (general prompts)")
 
-    legal_scores   = _score_condition(clf, active_legal,   legal_texts,   condition="legal")
-    general_scores = _score_condition(clf, active_general, general_texts, condition="general")
+    legal_scores   = _score_condition(clf, active_legal,   legal_texts,   condition="legal",   expected_label=1)
+    general_scores = _score_condition(clf, active_general, general_texts, condition="general", expected_label=0)
 
     return {
-        # Legal-prompt condition
+        # Legal-prompt condition (ground truth = legal, pos_label=1)
         "legal_mean_legal_style_score":   legal_scores["mean_legal_style_score"],
         "legal_mean_general_style_score": legal_scores["mean_general_style_score"],
         "legal_predicted_legal_rate":     legal_scores["predicted_legal_rate"],
+        "legal_precision":                legal_scores["precision"],
+        "legal_recall":                   legal_scores["recall"],
+        "legal_f1":                       legal_scores["f1"],
         "legal_num_examples":             legal_scores["num_examples"],
-        # General-prompt condition
+        # General-prompt condition (ground truth = general, pos_label=0)
         "general_mean_legal_style_score":   general_scores["mean_legal_style_score"],
         "general_mean_general_style_score": general_scores["mean_general_style_score"],
         "general_predicted_general_rate":   float(1.0 - general_scores["predicted_legal_rate"]),
+        "general_precision":                general_scores["precision"],
+        "general_recall":                   general_scores["recall"],
+        "general_f1":                       general_scores["f1"],
         "general_num_examples":             general_scores["num_examples"],
         "_raw": {
             "legal":   legal_scores,
