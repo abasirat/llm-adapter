@@ -237,6 +237,55 @@ def parse_args() -> argparse.Namespace:
         help="Path to the .joblib style classifier file (defaults to the one bundled in evaluations/style/).",
     )
 
+    parser.add_argument(
+        "--train_style_clf",
+        action="store_true",
+        default=False,
+        help="Train the style classifier before running evaluations.",
+    )
+
+    parser.add_argument(
+        "--style_clf_output_model",
+        type=str,
+        default=None,
+        help="Output path for the trained classifier (default: bundled evaluations/style/legal_style_clf.joblib).",
+    )
+
+    parser.add_argument(
+        "--style_clf_legal_dataset",
+        type=str,
+        default="pile-of-law/pile-of-law",
+        help="HuggingFace dataset name for legal training samples.",
+    )
+
+    parser.add_argument(
+        "--style_clf_legal_subset",
+        type=str,
+        default="courtlistener_opinions",
+        help="Dataset subset/config for the legal training dataset.",
+    )
+
+    parser.add_argument(
+        "--style_clf_general_dataset",
+        type=str,
+        default="HuggingFaceFW/fineweb",
+        help="HuggingFace dataset name for general training samples.",
+    )
+
+    parser.add_argument(
+        "--style_clf_general_subset",
+        type=str,
+        default="sample-10BT",
+        help="Dataset subset/config for the general training dataset.",
+    )
+
+    parser.add_argument(
+        "--style_clf_max_samples",
+        type=int,
+        default=50000,
+        help="Maximum examples to stream per class when training the classifier.",
+    )
+
     return parser.parse_args()
 
 
@@ -266,6 +315,23 @@ def main() -> None:
         shared_kwargs["max_new_tokens"] = args.style_max_new_tokens
     if args.style_clf_path is not None:
         shared_kwargs["clf_path"] = args.style_clf_path
+
+    # Optionally train the style classifier before evaluation.
+    if args.train_style_clf:
+        print("\nTraining style classifier...")
+        from evaluations.style.evaluator import train_classifier as _train_clf
+        clf_out = _train_clf(
+            output_model=args.style_clf_output_model,
+            legal_dataset=args.style_clf_legal_dataset,
+            legal_subset=args.style_clf_legal_subset,
+            general_dataset=args.style_clf_general_dataset,
+            general_subset=args.style_clf_general_subset,
+            max_samples=args.style_clf_max_samples,
+        )
+        print(f"Classifier saved to: {clf_out}")
+        # If no explicit clf_path was given, point evaluations at the new model.
+        if "clf_path" not in shared_kwargs:
+            shared_kwargs["clf_path"] = clf_out
 
     all_metrics: Dict[str, Dict] = {}
 

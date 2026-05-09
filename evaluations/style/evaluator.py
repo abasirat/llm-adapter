@@ -18,8 +18,10 @@ Public interface:
     evaluate(model_name_or_path, device, **kwargs) -> dict
 """
 
+import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 import joblib
@@ -28,6 +30,10 @@ import torch
 from tqdm import tqdm
 
 from evaluations.utils import load_model
+
+_TRAINING_SCRIPT = (
+    Path(__file__).parents[2] / "model_eval" / "doc_classification" / "legal_style_classifier_streaming.py"
+)
 
 _CLF_PATH          = Path(__file__).parent / "legal_style_clf.joblib"
 _LEGAL_PROMPTS_DIR  = Path(__file__).parent / "legal_prompts"
@@ -149,9 +155,99 @@ def _load_classifier(clf_path: Path):
         raise FileNotFoundError(
             f"Style classifier not found at {clf_path}.\n"
             "Train it first with:\n"
-            "  python model_eval/doc_classification/legal_style_classifier_streaming.py train"
+            "  python model_eval/doc_classification/legal_style_classifier_streaming.py train\n"
+            "or call evaluations.style.evaluator.train_classifier()."
         )
     return joblib.load(clf_path)
+
+
+def train_classifier(
+    output_model: Optional[str] = None,
+    legal_dataset: str = "pile-of-law/pile-of-law",
+    legal_subset: str = "courtlistener_opinions",
+    legal_split: str = "train",
+    legal_text_field: str = "text",
+    general_dataset: str = "HuggingFaceFW/fineweb",
+    general_subset: str = "sample-10BT",
+    general_split: str = "train",
+    general_text_field: str = "text",
+    max_samples: int = 50000,
+    min_chars: int = 100,
+    max_chars: Optional[int] = 2000,
+    test_size: float = 0.2,
+    seed: int = 42,
+    max_ngram: int = 2,
+    min_df: int = 3,
+    max_df: float = 0.95,
+    max_features: int = 100000,
+    max_iter: int = 1000,
+    top_k: int = 30,
+) -> str:
+    """
+    Train the TF-IDF + logistic regression legal/general style classifier.
+
+    Delegates to model_eval/doc_classification/legal_style_classifier_streaming.py
+    so there is no code duplication.
+
+    Args:
+        output_model: Destination path for the .joblib file.  Defaults to the
+                      bundled classifier path (evaluations/style/legal_style_clf.joblib).
+        legal_dataset/legal_subset/legal_split/legal_text_field:
+            Source for legal training samples (streaming).
+        general_dataset/general_subset/general_split/general_text_field:
+            Source for general training samples (streaming).
+        max_samples:  Maximum examples to stream per class.
+        min_chars:    Minimum character length to accept a document.
+        max_chars:    Truncate documents to this many characters (None = no limit).
+        test_size:    Fraction held out for validation.
+        seed:         Random seed.
+        max_ngram:    Upper n-gram bound for TF-IDF.
+        min_df / max_df / max_features: TF-IDF vocabulary parameters.
+        max_iter:     Logistic regression max iterations.
+        top_k:        Top features to print after training.
+
+    Returns:
+        Absolute path to the saved .joblib classifier file.
+    """
+    if not _TRAINING_SCRIPT.exists():
+        raise FileNotFoundError(
+            f"Training script not found at {_TRAINING_SCRIPT}. "
+            "Ensure the model_eval/doc_classification directory is present."
+        )
+
+    out_path = Path(output_model) if output_model else _CLF_PATH
+
+    spec = importlib.util.spec_from_file_location(
+        "legal_style_classifier_streaming", _TRAINING_SCRIPT
+    )
+    training_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(training_module)
+
+    args = SimpleNamespace(
+        legal_dataset=legal_dataset,
+        legal_subset=legal_subset,
+        legal_split=legal_split,
+        legal_text_field=legal_text_field,
+        general_dataset=general_dataset,
+        general_subset=general_subset,
+        general_split=general_split,
+        general_text_field=general_text_field,
+        max_samples=max_samples,
+        min_chars=min_chars,
+        max_chars=max_chars,
+        test_size=test_size,
+        seed=seed,
+        max_ngram=max_ngram,
+        min_df=min_df,
+        max_df=max_df,
+        max_features=max_features,
+        max_iter=max_iter,
+        top_k=top_k,
+        output_model=str(out_path),
+    )
+
+    training_module.train_classifier(args)
+    return str(out_path)
 
 
 @torch.no_grad()
