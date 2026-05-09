@@ -506,6 +506,7 @@ class LayerAdapter(torch.nn.Module):
         v_dim=None,
         num_attention_heads=4,
         attention_temperature=2.0,
+        lattention_temperature=None,  # it should be removed later. I put it there because of a typo when logging the temperature in the training loop, but it caused some confusion so I added a separate argument for it. It should be removed later and replaced with attention_temperature.
         representation_type="mid_mlp",
         query_source="final_hidden",
         aggregation_strategy="attention",
@@ -565,6 +566,8 @@ class LayerAdapter(torch.nn.Module):
         self.layer_representations = []
 
         if aggregation_strategy == "attention":
+            if lattention_temperature is not None:
+                attention_temperature = lattention_temperature
             self.aggregator = LayerAttentionAggregator(
                 hidden_size=hs,
                 rep_dim=self.rep_dim,

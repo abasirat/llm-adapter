@@ -392,7 +392,7 @@ def train(model,
                 raw_model.transformer.encoder.set_attention_temperature(current_temperature)
 
                 # update the adapter config with the current temperature for saving (and then loading) the model
-                adapter_config['lattention_temperature'] = current_temperature
+                adapter_config['attention_temperature'] = current_temperature
 
 
             # If using layer_adapter with variational modeling, add KL divergence loss
