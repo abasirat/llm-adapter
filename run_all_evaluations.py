@@ -230,6 +230,13 @@ def parse_args() -> argparse.Namespace:
         help="Maximum tokens to generate per prompt in style evaluation (default: 80).",
     )
 
+    parser.add_argument(
+        "--style_clf_path",
+        type=str,
+        default=None,
+        help="Path to the .joblib style classifier file (defaults to the one bundled in evaluations/style/).",
+    )
+
     return parser.parse_args()
 
 
@@ -257,6 +264,8 @@ def main() -> None:
         shared_kwargs["min_new_tokens"] = args.style_min_new_tokens
     if args.style_max_new_tokens is not None:
         shared_kwargs["max_new_tokens"] = args.style_max_new_tokens
+    if args.style_clf_path is not None:
+        shared_kwargs["clf_path"] = args.style_clf_path
 
     all_metrics: Dict[str, Dict] = {}
 
