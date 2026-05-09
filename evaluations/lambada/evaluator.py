@@ -109,7 +109,6 @@ def evaluate(
     device: str,
     split: str = "test",
     max_examples: Optional[int] = None,
-    max_new_tokens: int = 5,
     **kwargs,
 ) -> dict:
     """
@@ -120,7 +119,6 @@ def evaluate(
         device: Torch device string, e.g. "cuda", "mps", "cpu".
         split: Dataset split to use (default "test").
         max_examples: Optional cap on number of examples evaluated.
-        max_new_tokens: Tokens to generate when predicting the next word.
 
     Returns:
         dict with scalar/printable metrics:
@@ -132,7 +130,6 @@ def evaluate(
         model, tokenizer, device,
         split=split,
         max_examples=max_examples,
-        max_new_tokens=max_new_tokens,
     )
 
     return {
