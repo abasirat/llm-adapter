@@ -37,26 +37,19 @@ def _normalize(text: str) -> str:
 
 
 @torch.no_grad()
-def _predict_next_word(model, tokenizer, context: str, device: str, max_new_tokens: int = 5) -> str:
-    """Generate a short continuation and return its first word."""
-    inputs = tokenizer(context, return_tensors="pt").to(device)
-    output_ids = model.generate(
-        **inputs,
-        max_new_tokens=max_new_tokens,
-        do_sample=False,
-        pad_token_id=tokenizer.eos_token_id,
-    )
-    generated = tokenizer.decode(
-        output_ids[0, inputs["input_ids"].shape[1]:],
-        skip_special_tokens=True,
-    ).strip()
+def _predict_next_word(model, tokenizer, context: str, device: str) -> str:
+    """
+    Predict the most likely next token using a single forward pass.
 
-    if not generated:
-        return ""
-
-    # Strip punctuation that may be attached to the word.
-    word = generated.split()[0]
-    return word.strip(".,!?;:\"'()[]{}")
+    The logit at the last context position is read and argmax is taken over
+    the full vocabulary.  Equivalent to greedy one-step decoding but avoids
+    the overhead of model.generate().
+    """
+    context_ids = tokenizer(context, return_tensors="pt").input_ids.to(device)
+    logits = model(context_ids).logits        # (1, seq_len, vocab)
+    next_token_id = int(logits[0, -1, :].argmax())
+    predicted = tokenizer.decode([next_token_id], skip_special_tokens=True).strip()
+    return predicted.strip(".,!?;:\"'()[]{}")
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +62,6 @@ def _run_evaluation(
     device: str,
     split: str = "test",
     max_examples: Optional[int] = None,
-    max_new_tokens: int = 5,
 ) -> Dict[str, Any]:
     dataset = load_dataset("lambada", split=split, streaming=True)
 
@@ -84,7 +76,7 @@ def _run_evaluation(
         if context is None:
             continue
 
-        prediction = _predict_next_word(model, tokenizer, context, device, max_new_tokens)
+        prediction = _predict_next_word(model, tokenizer, context, device)
         is_correct = _normalize(prediction) == _normalize(target)
         correct += int(is_correct)
 
