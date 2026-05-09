@@ -32,9 +32,7 @@ from tqdm import tqdm
 
 from evaluations.utils import load_model
 
-_TRAINING_SCRIPT = (
-    Path(__file__).parents[2] / "model_eval" / "doc_classification" / "legal_style_classifier_streaming.py"
-)
+_TRAINING_SCRIPT = Path(__file__).parent / "legal_style_classifier_streaming.py"
 
 _CLF_PATH          = Path(__file__).parent / "legal_style_clf.joblib"
 _LEGAL_PROMPTS_DIR  = Path(__file__).parent / "legal_prompts"
