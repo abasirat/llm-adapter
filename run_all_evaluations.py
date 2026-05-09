@@ -34,10 +34,13 @@ from typing import Any, Dict, List, Optional, Tuple
 # ---------------------------------------------------------------------------
 
 EVALUATORS: List[Tuple[str, str]] = [
-    ("truthfulqa", "evaluations.truthfulqa.evaluator"),
-    ("lambada",    "evaluations.lambada.evaluator"),
-    ("style",      "evaluations.style.evaluator"),
-    ("perplexity", "evaluations.perplexity.evaluator"),
+    ("truthfulqa",  "evaluations.truthfulqa.evaluator"),
+    ("lambada",     "evaluations.lambada.evaluator"),
+    ("style",       "evaluations.style.evaluator"),
+    ("perplexity",  "evaluations.perplexity.evaluator"),
+    ("casehold",    "evaluations.casehold.evaluator"),
+    ("ledgar",      "evaluations.ledgar.evaluator"),
+    ("unfair_tos",  "evaluations.unfair_tos.evaluator"),
 ]
 
 

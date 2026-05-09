@@ -33,8 +33,8 @@ for model_name in "${models[@]}"; do
             CMD+=" --model_name_or_path ${model_prefix}/${model_name}"
     fi
     CMD+=" --style_min_new_tokens 20 --style_max_new_tokens 150 --style_clf_path ${style_classifier_model}"
-    CMD+=" --max_examples 1000"
-    CMD+=" --skip perplexity"
+    CMD+=" --max_examples 100"
+    CMD+=" --skip perplexity ledgar unfair_tos"
     CMD+=" --output_file ${model_prefix}/${model_name}_eval.json"
     CMD+=" --legal_prompts_path evaluations/style/legal_prompts/"
     CMD+=" --general_prompts_path evaluations/style/general_prompts/"
