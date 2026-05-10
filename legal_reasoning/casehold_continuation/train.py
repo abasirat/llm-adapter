@@ -90,8 +90,11 @@ class CausalLMTrainer(Trainer):
     """
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-        # Strip Trainer-internal kwargs that the model forward() won't accept.
-        inputs.pop("num_items_in_batch", None)
+        # num_items_in_batch is passed by Trainer >=4.46 for loss scaling;
+        # the parent compute_loss re-injects it into inputs before model(**inputs),
+        # which breaks adapter modules with an explicit forward() signature.
+        # Popping it from kwargs prevents the parent from ever seeing it.
+        kwargs.pop("num_items_in_batch", None)
         return super().compute_loss(model, inputs, return_outputs=return_outputs, **kwargs)
 
 

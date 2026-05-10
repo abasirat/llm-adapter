@@ -104,6 +104,7 @@ class LanguageAdapter(torch.nn.Module):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        **kwargs,  # absorb future/trainer-injected kwargs (e.g. num_items_in_batch)
     ) -> Union[Tuple, BaseModelOutputWithPastAndCrossAttentions]:
         
         encoder_outputs =  self.encoder(
