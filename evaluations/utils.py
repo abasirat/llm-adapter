@@ -20,6 +20,12 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 _HF_CAUSAL_MODELS = {"gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl"}
 
 
+def _is_hf_model_dir(path: str) -> bool:
+    """Return True if *path* is a directory saved with save_pretrained."""
+    p = Path(path)
+    return p.is_dir() and (p / "config.json").exists()
+
+
 def select_device(device: str = "auto") -> str:
     """Return a concrete device string (cuda / mps / cpu)."""
     if device not in (None, "auto"):
@@ -45,7 +51,7 @@ def load_model(
     Returns:
         (model, tokenizer)  —  model is already moved to *device* and in eval mode.
     """
-    if model_name_or_path in _HF_CAUSAL_MODELS:
+    if model_name_or_path in _HF_CAUSAL_MODELS or _is_hf_model_dir(model_name_or_path):
         tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
         _set_pad_token(tokenizer)
         model = AutoModelForCausalLM.from_pretrained(model_name_or_path)

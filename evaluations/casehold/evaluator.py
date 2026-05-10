@@ -100,7 +100,10 @@ def _choice_avg_logprob(
 #        context = context + "\nHolding:"
 #    return context
 def _build_prompt(context: str) -> str:
-    return context.replace("<HOLDING>", "").rstrip()
+    # Delegate to the canonical implementation used during continuation training
+    # so that inference-time and training-time prompts are identical.
+    from legal_reasoning.casehold_continuation.utils import build_prompt
+    return build_prompt(context)
 
 
 # ---------------------------------------------------------------------------
