@@ -37,6 +37,7 @@ Pass it directly to the existing CaseHOLD evaluator:
 import argparse
 import logging
 import math
+import os
 import sys
 
 from transformers import Trainer, TrainerCallback, TrainingArguments
@@ -45,6 +46,32 @@ from .dataset import CaseHoldContinuationDataset
 from .utils import CausalLMCollator, load_model_for_training
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Device helper
+# ---------------------------------------------------------------------------
+
+def _apply_device_env(device: str) -> None:
+    """
+    Steer the Trainer to the requested device without relying on removed
+    TrainingArguments kwargs (no_cuda / use_mps_device were dropped in
+    transformers 4.42+).
+
+    'cpu'  : set CUDA_VISIBLE_DEVICES="" so all GPUs are hidden
+    'mps'  : enable the MPS fallback env var for unsupported ops
+    'cuda' : clear any CPU-forcing override that may already be set
+    'auto' : do nothing — Trainer auto-detects (cuda > mps > cpu)
+    """
+    if device == "cpu":
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        os.environ.pop("PYTORCH_ENABLE_MPS_FALLBACK", None)
+    elif device == "mps":
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+    elif device == "cuda":
+        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+    # 'auto': leave environment untouched
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +241,7 @@ def main() -> None:
         load_best = False
 
     logger.info("Device: %s", args.device)
+    _apply_device_env(args.device)
 
     # ------------------------------------------------------------------
     # Model & tokenizer
@@ -272,8 +300,6 @@ def main() -> None:
         max_grad_norm=args.max_grad_norm,
         fp16=args.fp16,
         bf16=args.bf16,
-        no_cuda=args.device == "cpu",
-        use_mps_device=args.device == "mps",
         eval_strategy=args.eval_strategy,
         save_strategy=args.save_strategy,
         save_total_limit=args.save_total_limit,
