@@ -271,7 +271,7 @@ def main() -> None:
     # Model & tokenizer
     # ------------------------------------------------------------------
     logger.info("Loading model: %s", args.model_name_or_path)
-    model, tokenizer = load_model_for_training(
+    model, tokenizer, adapter_save_fn = load_model_for_training(
         args.model_name_or_path,
         unfreeze_all=args.unfreeze_all,
     )
@@ -368,8 +368,19 @@ def main() -> None:
     # Save final model and tokenizer
     # ------------------------------------------------------------------
     logger.info("Saving model and tokenizer to: %s", args.output_dir)
-    trainer.save_model(args.output_dir)
-    tokenizer.save_pretrained(args.output_dir)
+    if adapter_save_fn is not None:
+        # Adapter checkpoint: save via llm_adapter.save_model so the file can
+        # be reloaded by load_model() from model_setup.py.
+        # The .pt file lands at <output_dir>/model.pt.
+        pt_path = adapter_save_fn(model, args.output_dir, tokenizer)
+        logger.info(
+            "Adapter checkpoint saved. To evaluate, pass:\n"
+            "  --model_name_or_path %s", pt_path
+        )
+    else:
+        # Plain HuggingFace model: save as a standard model directory.
+        trainer.save_model(args.output_dir)
+        tokenizer.save_pretrained(args.output_dir)
     logger.info("Done.")
 
 

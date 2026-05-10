@@ -7,7 +7,7 @@ Shared utilities for CaseHOLD continuation training.
 """
 
 import os
-from typing import Dict, List, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizer
@@ -50,7 +50,7 @@ def build_prompt(context: str) -> str:
 def load_model_for_training(
     model_name_or_path: str,
     unfreeze_all: bool = False,
-) -> Tuple[torch.nn.Module, PreTrainedTokenizer]:
+) -> Tuple[torch.nn.Module, PreTrainedTokenizer, Optional[Callable]]:
     """
     Load a causal LM and tokenizer for fine-tuning.
 
@@ -65,21 +65,62 @@ def load_model_for_training(
                       what the checkpoint set up.  Useful for full fine-tuning
                       of a base model or for unfreezing an adapter checkpoint.
     Returns:
-        (model, tokenizer)
+        (model, tokenizer, save_fn)
+
+        save_fn is None for plain HuggingFace models.
+        For adapter checkpoints, save_fn(model, output_dir, tokenizer) saves
+        via llm_adapter.save_model so the result can be reloaded by load_model.
+        The adapter .pt file is written to <output_dir>/model.pt and the
+        tokenizer files to <output_dir>/.
     """
+    save_fn: Optional[Callable] = None
+
     if model_name_or_path in _HF_CAUSAL_MODELS or _is_hf_model_dir(model_name_or_path):
         tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
         model = AutoModelForCausalLM.from_pretrained(model_name_or_path)
     else:
         # Project adapter checkpoint (.pt) – delegate to the project loader.
         try:
-            from llm_adapter import load_model as _load_adapter
+            from llm_adapter import load_model as _load_adapter, save_model as _save_adapter
         except ImportError as exc:
             raise ImportError(
                 "llm_adapter is not installed.  Run `pip install -e .` from the "
                 "project root, or pass a standard HuggingFace model name."
             ) from exc
+
+        # Read metadata before loading so the save_fn closure can reconstruct
+        # the same payload without needing the original checkpoint path later.
+        raw = torch.load(model_name_or_path, map_location="cpu", weights_only=False)
+        _adapter_type   = raw["adapter_type"]
+        _adapter_config = raw["adapter_config"]
+        _wechsel_config = raw.get("wechsel_config", None)
+        del raw  # free before loading the full model
+
         model, tokenizer, _ = _load_adapter(model_name_or_path)
+
+        # Closure that mirrors llm_adapter.save_model but targets a directory:
+        # writes <output_dir>/model.pt + tokenizer files to <output_dir>/.
+        def save_fn(
+            m: torch.nn.Module,
+            output_dir: str,
+            tok: PreTrainedTokenizer,
+            *,
+            adapter_type=_adapter_type,
+            adapter_config=_adapter_config,
+            wechsel_config=_wechsel_config,
+        ) -> str:
+            os.makedirs(output_dir, exist_ok=True)
+            pt_path = os.path.join(output_dir, "model.pt")
+            _save_adapter(
+                m,
+                adapter_type=adapter_type,
+                adapter_config=adapter_config,
+                save_path=pt_path,
+                wechsel_config=wechsel_config,
+                tokenizer=tok,
+                tokenizer_path=output_dir,
+            )
+            return pt_path
 
     # GPT-2 family has no pad token by default; reuse eos_token for padding.
     if tokenizer.pad_token is None:
@@ -90,7 +131,7 @@ def load_model_for_training(
         for param in model.parameters():
             param.requires_grad = True
 
-    return model, tokenizer
+    return model, tokenizer, save_fn
 
 
 def _is_hf_model_dir(path: str) -> bool:
