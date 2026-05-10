@@ -130,6 +130,100 @@ def _score_labels_with_cache(
 
     return scores
 
+@torch.no_grad()
+def _score_labels_batched(
+    model,
+    tokenizer,
+    prompt: str,
+    label_names: List[str],
+    device: str,
+    label_batch_size: int = 32,
+    max_length: int = 768,
+) -> List[float]:
+    """
+    Score all LEDGAR labels in batches.
+
+    For each label:
+        score = mean log P(label_tokens | prompt)
+
+    Only label tokens are scored.
+    """
+
+    scores = []
+
+    for start in range(0, len(label_names), label_batch_size):
+        batch_labels = label_names[start : start + label_batch_size]
+
+        label_texts = [
+            " " + label.replace("_", " ").replace("-", " ").strip()
+            for label in batch_labels
+        ]
+
+        full_texts = [prompt + label_text for label_text in label_texts]
+
+        enc = tokenizer(
+            full_texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+            add_special_tokens=False,
+        ).to(device)
+
+        input_ids = enc["input_ids"]
+        attention_mask = enc["attention_mask"]
+
+        outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+        logits = outputs.logits
+
+        shift_logits = logits[:, :-1, :]
+        shift_labels = input_ids[:, 1:]
+        shift_attention = attention_mask[:, 1:]
+
+        log_probs = F.log_softmax(shift_logits, dim=-1)
+
+        token_lp = log_probs.gather(
+            -1,
+            shift_labels.unsqueeze(-1),
+        ).squeeze(-1)
+
+        for i, label_text in enumerate(label_texts):
+            prompt_ids = tokenizer(
+                prompt,
+                add_special_tokens=False,
+                truncation=True,
+                max_length=max_length,
+            ).input_ids
+
+            full_ids = tokenizer(
+                full_texts[i],
+                add_special_tokens=False,
+                truncation=True,
+                max_length=max_length,
+            ).input_ids
+
+            label_len = len(full_ids) - len(prompt_ids)
+
+            if label_len <= 0:
+                scores.append(float("-inf"))
+                continue
+
+            # token_lp position j scores input_ids[j+1]
+            # label starts at token index len(prompt_ids)
+            start_pos = len(prompt_ids) - 1
+            end_pos = start_pos + label_len
+
+            label_lp = token_lp[i, start_pos:end_pos]
+            label_mask = shift_attention[i, start_pos:end_pos]
+
+            valid_lp = label_lp[label_mask.bool()]
+
+            if valid_lp.numel() == 0:
+                scores.append(float("-inf"))
+            else:
+                scores.append(valid_lp.mean().item())
+
+    return scores
 
 # ---------------------------------------------------------------------------
 # Evaluation loop
@@ -141,6 +235,8 @@ def _run_evaluation(
     device: str,
     split: str = "test",
     max_examples: Optional[int] = None,
+    label_batch_size: int = 32,
+    max_length: int = 768,
 ) -> Dict[str, Any]:
     dataset = load_dataset("lex_glue", "ledgar", split=split)
     label_names = _get_label_names(dataset)
@@ -158,7 +254,16 @@ def _run_evaluation(
         gold: int = int(ex["label"])
 
         prompt = _build_prompt(text)
-        scores = _score_labels_with_cache(model, tokenizer, prompt, label_names, device)
+        #scores = _score_labels_with_cache(model, tokenizer, prompt, label_names, device)
+        scores = _score_labels_batched(
+            model=model,
+            tokenizer=tokenizer,
+            prompt=prompt,
+            label_names=label_names,
+            device=device,
+            label_batch_size=label_batch_size,
+            max_length=max_length,
+        )
 
         pred = int(torch.tensor(scores).argmax().item())
         is_correct = pred == gold
@@ -210,29 +315,21 @@ def evaluate(
     device: str,
     split: str = "test",
     max_examples: Optional[int] = None,
+    label_batch_size: int = 32,
+    max_length: int = 768,
     **kwargs,
 ) -> dict:
-    """
-    Evaluate a causal LM on the LEDGAR benchmark (LexGLUE).
-
-    Uses prompt-based likelihood scoring with the full label set (100 classes).
-    The KV cache of the prompt is reused across all label candidates to avoid
-    redundant computation.
-
-    Args:
-        model_name_or_path: HuggingFace model name or local adapter checkpoint.
-        device: Torch device string.
-        split: Dataset split — "train", "validation", or "test".
-        max_examples: Optional cap on examples evaluated.
-
-    Returns:
-        dict with:
-            accuracy      – exact-match accuracy
-            macro_f1      – macro-averaged F1 across all classes
-            num_examples  – number of examples evaluated
-    """
     model, tokenizer = load_model(model_name_or_path, device)
-    output = _run_evaluation(model, tokenizer, device, split=split, max_examples=max_examples)
+
+    output = _run_evaluation(
+        model,
+        tokenizer,
+        device,
+        split=split,
+        max_examples=max_examples,
+        label_batch_size=label_batch_size,
+        max_length=max_length,
+    )
 
     return {
         "accuracy": output["accuracy"],
