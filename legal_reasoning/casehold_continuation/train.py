@@ -75,6 +75,27 @@ def _apply_device_env(device: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Custom Trainer
+# ---------------------------------------------------------------------------
+
+class CausalLMTrainer(Trainer):
+    """
+    Thin Trainer subclass that removes kwargs unknown to the model's forward()
+    before the forward pass.
+
+    Transformers >=4.46 passes `num_items_in_batch` to compute_loss for
+    loss-scaling purposes, but custom model wrappers (e.g. LanguageAdapter)
+    have an explicit forward() signature that rejects unknown keyword args.
+    We intercept it here rather than modifying the adapter code.
+    """
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        # Strip Trainer-internal kwargs that the model forward() won't accept.
+        inputs.pop("num_items_in_batch", None)
+        return super().compute_loss(model, inputs, return_outputs=return_outputs, **kwargs)
+
+
+# ---------------------------------------------------------------------------
 # Perplexity callback
 # ---------------------------------------------------------------------------
 
@@ -324,7 +345,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Trainer
     # ------------------------------------------------------------------
-    trainer = Trainer(
+    trainer = CausalLMTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
