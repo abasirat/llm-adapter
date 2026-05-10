@@ -86,19 +86,21 @@ def _choice_avg_logprob(
     return choice_lp.mean().item()
 
 
+#def _build_prompt(context: str) -> str:
+#    """
+#    Wrap the citation context in a clear instruction prefix.
+#
+#    CaseHOLD context strings already end with <HOLDING>.  We replace that
+#    marker with a colon to form the prompt.
+#    """
+#    context = context.strip()
+#    if context.endswith("<HOLDING>"):
+#        context = context[: -len("<HOLDING>")].rstrip() + "\nHolding:"
+#    else:
+#        context = context + "\nHolding:"
+#    return context
 def _build_prompt(context: str) -> str:
-    """
-    Wrap the citation context in a clear instruction prefix.
-
-    CaseHOLD context strings already end with <HOLDING>.  We replace that
-    marker with a colon to form the prompt.
-    """
-    context = context.strip()
-    if context.endswith("<HOLDING>"):
-        context = context[: -len("<HOLDING>")].rstrip() + "\nHolding:"
-    else:
-        context = context + "\nHolding:"
-    return context
+    return context.replace("<HOLDING>", "").rstrip()
 
 
 # ---------------------------------------------------------------------------
@@ -127,9 +129,13 @@ def _run_evaluation(
         gold: int = int(ex["label"])
 
         prompt = _build_prompt(context)
+
+        old_side = tokenizer.truncation_side
+        tokenizer.truncation_side = "left" # truncate from the left if needed to fit max_length. We want to keep the end of the prompt since the holding is there.
         prompt_ids = tokenizer(
             prompt, return_tensors="pt", truncation=True, max_length=900
         ).input_ids.to(device)
+        tokenizer.truncation_side = old_side
 
         scores = [
             _choice_avg_logprob(model, tokenizer, prompt_ids, c, device)

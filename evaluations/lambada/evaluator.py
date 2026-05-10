@@ -30,10 +30,11 @@ def _split_context_target(text: str):
         return None, None
     return " ".join(words[:-1]), words[-1]
 
-
 def _normalize(text: str) -> str:
-    """Lowercase and collapse whitespace for exact-match comparison."""
-    return re.sub(r"\s+", " ", text.strip().lower())
+    text = text.strip().lower()
+    text = text.strip(".,!?;:\"'()[]{}")
+    text = re.sub(r"\s+", " ", text)
+    return text
 
 
 @torch.no_grad()
@@ -68,8 +69,8 @@ def _run_evaluation(
     results = []
     correct = 0
 
-    for i, ex in enumerate(tqdm(dataset, desc="LAMBADA")):
-        if max_examples is not None and i >= max_examples:
+    for ex in tqdm(dataset, desc="LAMBADA"):
+        if max_examples is not None and len(results) >= max_examples:
             break
 
         context, target = _split_context_target(ex["text"])
