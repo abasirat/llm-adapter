@@ -86,14 +86,15 @@ class RankingCollator:
         labels_out: List[torch.Tensor] = []
 
         for e in examples:
+            n_cands = e["input_ids"].shape[0]  # number of candidates (5 for CaseHOLD, variable for LEDGAR)
             seq_len = e["input_ids"].shape[1]
             pad_len = max_len - seq_len
 
             if pad_len > 0:
                 pad_ids = torch.full(
-                    (5, pad_len), self.pad_token_id, dtype=torch.long
+                    (n_cands, pad_len), self.pad_token_id, dtype=torch.long
                 )
-                pad_zeros = torch.zeros((5, pad_len), dtype=torch.long)
+                pad_zeros = torch.zeros((n_cands, pad_len), dtype=torch.long)
                 input_ids_out.append(torch.cat([e["input_ids"], pad_ids], dim=1))
                 attn_out.append(torch.cat([e["attention_mask"], pad_zeros], dim=1))
                 mask_out.append(torch.cat([e["choice_mask"], pad_zeros], dim=1))
