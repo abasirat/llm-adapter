@@ -65,8 +65,9 @@ def _expand_past_kv(past_kv, B: int, C: int):
     Expand a KV cache from batch size B to B*C by repeating each entry C times.
 
     Handles both:
-      - ``DynamicCache`` (transformers >= 4.36): accesses ``.key_cache`` /
-        ``.value_cache`` lists directly and returns a new ``DynamicCache``.
+      - ``DynamicCache`` (transformers >= 4.36): converts to legacy format via
+        ``to_legacy_cache()``, which exists in all DynamicCache versions and
+        produces a predictable tuple-of-(key, value) per layer.
       - Legacy tuple-of-tuples: each layer is a tuple whose first two elements
         are the key and value tensors (additional elements, e.g. cross-attn
         states, are passed through unchanged).
@@ -75,20 +76,14 @@ def _expand_past_kv(past_kv, B: int, C: int):
         # t: (B, nh, P, hd)  →  (B*C, nh, P, hd)
         return t.unsqueeze(1).expand(-1, C, -1, -1, -1).reshape(B * C, *t.shape[1:])
 
-    try:
-        from transformers.cache_utils import DynamicCache
-        if isinstance(past_kv, DynamicCache):
-            expanded = DynamicCache()
-            for k, v in zip(past_kv.key_cache, past_kv.value_cache):
-                expanded.key_cache.append(_expand(k))
-                expanded.value_cache.append(_expand(v))
-            return expanded
-    except ImportError:
-        pass
+    # Convert any Cache subclass to a plain tuple-of-tuples via to_legacy_cache().
+    # This method exists in all DynamicCache versions and is safer than accessing
+    # .key_cache / .value_cache directly (those attributes were added later).
+    if hasattr(past_kv, "to_legacy_cache"):
+        past_kv = past_kv.to_legacy_cache()
 
-    # Legacy tuple-of-tuples.  Use index access so we are safe regardless of
-    # whether the inner tuple has 2 elements (decoder-only) or more
-    # (encoder-decoder cross-attention).
+    # past_kv is now a tuple of per-layer tuples: (key, value[, ...]).
+    # Use index access so we are safe whether inner tuples have 2 or more elements.
     return tuple(
         (_expand(layer[0]), _expand(layer[1])) + tuple(layer[2:])
         for layer in past_kv
