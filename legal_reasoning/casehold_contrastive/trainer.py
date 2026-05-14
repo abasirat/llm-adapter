@@ -64,55 +64,25 @@ def _expand_past_kv(past_kv, B: int, C: int):
     """
     Expand a KV cache from batch size B to B*C by repeating each entry C times.
 
-    Handles three generations of the transformers KV-cache API:
-      - Plain tuple-of-tuples (very old transformers): expanded tuple returned.
-      - DynamicCache with key_cache/value_cache lists (transformers ~4.40+, 5.x):
-        lists are expanded in-place on a new DynamicCache and returned.
-      - Legacy DynamicCache with only to_legacy_cache/from_legacy_cache (4.36–4.39):
-        round-tripped through the legacy tuple format.
+    Uses the stable DynamicCache.update() API when available (transformers >= 4.36),
+    so it works across all transformers versions without silent fallbacks.
     """
     def _expand(t: torch.Tensor) -> torch.Tensor:
-        # (B, nh, P, hd)  →  (B*C, nh, P, hd)
         return t.unsqueeze(1).expand(-1, C, -1, -1, -1).reshape(B * C, *t.shape[1:])
 
-    # --- Path 1: new-style DynamicCache with key_cache / value_cache lists -------
-    # This covers transformers 5.x (and 4.40+) which requires a Cache object back.
-    if hasattr(past_kv, "key_cache") and hasattr(past_kv, "value_cache"):
-        try:
-            from transformers.cache_utils import DynamicCache
-            new_cache = DynamicCache()
-            new_cache.key_cache   = [_expand(k) for k in past_kv.key_cache]
-            new_cache.value_cache = [_expand(v) for v in past_kv.value_cache]
-            # Keep _seen_tokens consistent so get_seq_length() returns the right value.
-            if hasattr(new_cache, "_seen_tokens") and new_cache.key_cache:
-                new_cache._seen_tokens = new_cache.key_cache[0].shape[-2]
-            return new_cache
-        except Exception:
-            pass  # fall through to legacy path
+    # DynamicCache (transformers >= 4.36): use stable .update() API.
+    if hasattr(past_kv, "key_cache"):
+        from transformers.cache_utils import DynamicCache
+        new_cache = DynamicCache()
+        for layer_idx, (k, v) in enumerate(zip(past_kv.key_cache, past_kv.value_cache)):
+            new_cache.update(_expand(k), _expand(v), layer_idx)
+        return new_cache
 
-    # --- Path 2: older DynamicCache with to_legacy_cache / from_legacy_cache -----
-    if hasattr(past_kv, "to_legacy_cache"):
-        legacy = past_kv.to_legacy_cache()
-        expanded_legacy = tuple(
-            (_expand(layer[0]), _expand(layer[1])) + tuple(layer[2:])
-            for layer in legacy
-        )
-        try:
-            from transformers.cache_utils import DynamicCache
-            return DynamicCache.from_legacy_cache(expanded_legacy)
-        except Exception:
-            return expanded_legacy
-
-    # --- Path 3: plain tuple-of-tuples (very old transformers) -------------------
+    # Plain tuple-of-tuples (pre-4.36).
     return tuple(
         (_expand(layer[0]), _expand(layer[1])) + tuple(layer[2:])
         for layer in past_kv
     )
-
-
-# ---------------------------------------------------------------------------
-# Collator
-# ---------------------------------------------------------------------------
 
 class RankingCollator:
     """
