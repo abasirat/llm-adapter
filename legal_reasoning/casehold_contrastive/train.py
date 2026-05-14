@@ -52,7 +52,7 @@ import sys
 import numpy as np
 from transformers import EvalPrediction, TrainingArguments
 
-from legal_reasoning.casehold_continuation.utils import load_model_for_training
+from legal_reasoning.utils import load_model_for_training
 from .dataset import CaseHoldRankingDataset
 from .trainer import RankingCollator, RankingTrainer
 

@@ -31,7 +31,7 @@ from datasets import load_dataset
 from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizer
 
-from legal_reasoning.casehold_continuation.utils import build_prompt
+from legal_reasoning.utils import build_prompt
 
 
 class CaseHoldRankingDataset(Dataset):
