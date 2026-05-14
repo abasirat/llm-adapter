@@ -64,38 +64,50 @@ def _expand_past_kv(past_kv, B: int, C: int):
     """
     Expand a KV cache from batch size B to B*C by repeating each entry C times.
 
-    Works across all transformers versions:
-      - Pre-4.36 : ``past_kv`` is a tuple-of-tuples; expanded tuple is returned.
-      - 4.36-4.x : ``DynamicCache`` with ``to_legacy_cache`` / ``from_legacy_cache``;
-                   converted to tuple, expanded, then converted back.
-      - 5.x+     : same API but the model's ``forward`` *requires* a ``DynamicCache``
-                   (calls ``.get_seq_length()``); ``from_legacy_cache`` reconstructs it.
+    Handles three generations of the transformers KV-cache API:
+      - Plain tuple-of-tuples (very old transformers): expanded tuple returned.
+      - DynamicCache with key_cache/value_cache lists (transformers ~4.40+, 5.x):
+        lists are expanded in-place on a new DynamicCache and returned.
+      - Legacy DynamicCache with only to_legacy_cache/from_legacy_cache (4.36–4.39):
+        round-tripped through the legacy tuple format.
     """
     def _expand(t: torch.Tensor) -> torch.Tensor:
         # (B, nh, P, hd)  →  (B*C, nh, P, hd)
         return t.unsqueeze(1).expand(-1, C, -1, -1, -1).reshape(B * C, *t.shape[1:])
 
-    is_cache_obj = hasattr(past_kv, "to_legacy_cache")
+    # --- Path 1: new-style DynamicCache with key_cache / value_cache lists -------
+    # This covers transformers 5.x (and 4.40+) which requires a Cache object back.
+    if hasattr(past_kv, "key_cache") and hasattr(past_kv, "value_cache"):
+        try:
+            from transformers.cache_utils import DynamicCache
+            new_cache = DynamicCache()
+            new_cache.key_cache   = [_expand(k) for k in past_kv.key_cache]
+            new_cache.value_cache = [_expand(v) for v in past_kv.value_cache]
+            # Keep _seen_tokens consistent so get_seq_length() returns the right value.
+            if hasattr(new_cache, "_seen_tokens") and new_cache.key_cache:
+                new_cache._seen_tokens = new_cache.key_cache[0].shape[-2]
+            return new_cache
+        except Exception:
+            pass  # fall through to legacy path
 
-    # Step 1: get a plain tuple-of-per-layer-(key, value) tuples.
-    legacy = past_kv.to_legacy_cache() if is_cache_obj else past_kv
-
-    # Step 2: expand key and value tensors in every layer.
-    expanded_legacy = tuple(
-        (_expand(layer[0]), _expand(layer[1])) + tuple(layer[2:])
-        for layer in legacy
-    )
-
-    # Step 3: if the original was a Cache object the model forward likely
-    # expects one back (transformers 5.x calls .get_seq_length() on it).
-    if is_cache_obj:
+    # --- Path 2: older DynamicCache with to_legacy_cache / from_legacy_cache -----
+    if hasattr(past_kv, "to_legacy_cache"):
+        legacy = past_kv.to_legacy_cache()
+        expanded_legacy = tuple(
+            (_expand(layer[0]), _expand(layer[1])) + tuple(layer[2:])
+            for layer in legacy
+        )
         try:
             from transformers.cache_utils import DynamicCache
             return DynamicCache.from_legacy_cache(expanded_legacy)
-        except (ImportError, AttributeError):
-            pass  # from_legacy_cache unavailable — fall through to tuple
+        except Exception:
+            return expanded_legacy
 
-    return expanded_legacy
+    # --- Path 3: plain tuple-of-tuples (very old transformers) -------------------
+    return tuple(
+        (_expand(layer[0]), _expand(layer[1])) + tuple(layer[2:])
+        for layer in past_kv
+    )
 
 
 # ---------------------------------------------------------------------------
