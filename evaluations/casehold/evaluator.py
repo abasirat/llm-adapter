@@ -102,7 +102,7 @@ def _choice_avg_logprob(
 def _build_prompt(context: str) -> str:
     # Delegate to the canonical implementation used during continuation training
     # so that inference-time and training-time prompts are identical.
-    from legal_reasoning.casehold_continuation.utils import build_prompt
+    from legal_reasoning.utils import build_prompt
     return build_prompt(context)
 
 
