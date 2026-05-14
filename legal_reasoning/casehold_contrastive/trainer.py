@@ -57,6 +57,45 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# KV-cache expansion helper
+# ---------------------------------------------------------------------------
+
+def _expand_past_kv(past_kv, B: int, C: int):
+    """
+    Expand a KV cache from batch size B to B*C by repeating each entry C times.
+
+    Handles both:
+      - ``DynamicCache`` (transformers >= 4.36): accesses ``.key_cache`` /
+        ``.value_cache`` lists directly and returns a new ``DynamicCache``.
+      - Legacy tuple-of-tuples: each layer is a tuple whose first two elements
+        are the key and value tensors (additional elements, e.g. cross-attn
+        states, are passed through unchanged).
+    """
+    def _expand(t: torch.Tensor) -> torch.Tensor:
+        # t: (B, nh, P, hd)  →  (B*C, nh, P, hd)
+        return t.unsqueeze(1).expand(-1, C, -1, -1, -1).reshape(B * C, *t.shape[1:])
+
+    try:
+        from transformers.cache_utils import DynamicCache
+        if isinstance(past_kv, DynamicCache):
+            expanded = DynamicCache()
+            for k, v in zip(past_kv.key_cache, past_kv.value_cache):
+                expanded.key_cache.append(_expand(k))
+                expanded.value_cache.append(_expand(v))
+            return expanded
+    except ImportError:
+        pass
+
+    # Legacy tuple-of-tuples.  Use index access so we are safe regardless of
+    # whether the inner tuple has 2 elements (decoder-only) or more
+    # (encoder-decoder cross-attention).
+    return tuple(
+        (_expand(layer[0]), _expand(layer[1])) + tuple(layer[2:])
+        for layer in past_kv
+    )
+
+
+# ---------------------------------------------------------------------------
 # Collator
 # ---------------------------------------------------------------------------
 
@@ -239,19 +278,9 @@ class RankingTrainer(Trainer):
         prompt_logits = prompt_out.logits                  # (B, P, V)
         past_kv       = prompt_out.past_key_values
 
-        # Normalise to legacy tuple-of-tuples so we can expand it.
-        # (Handles DynamicCache introduced in transformers >= 4.36.)
-        if hasattr(past_kv, "to_legacy_cache"):
-            past_kv = past_kv.to_legacy_cache()
-
         # Expand KV cache: (B, nh, P, hd) → (B*C, nh, P, hd).
-        past_kv_expanded = tuple(
-            (
-                k.unsqueeze(1).expand(-1, C, -1, -1, -1).reshape(B * C, *k.shape[1:]),
-                v.unsqueeze(1).expand(-1, C, -1, -1, -1).reshape(B * C, *v.shape[1:]),
-            )
-            for k, v in past_kv
-        )
+        # Handles both DynamicCache (transformers >= 4.36) and legacy tuple-of-tuples.
+        past_kv_expanded = _expand_past_kv(past_kv, B, C)
 
         # ------------------------------------------------------------------
         # Step 2: score all C label tails in one batched forward pass.
