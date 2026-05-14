@@ -112,21 +112,55 @@ class LedgarRankingDataset(Dataset):
             for name in self.label_names
         ]
 
+        # Store pre-tokenized prompts and gold labels so we can re-sample
+        # negatives each epoch without re-downloading or re-tokenizing.
+        self._prompt_ids_list: List[List[int]] = []
+        self._gold_labels: List[int] = []
+        for ex in raw:
+            gold = int(ex["label"])
+            prompt_ids = tokenizer.encode(
+                _build_prompt(ex["text"]), add_special_tokens=True
+            )
+            self._prompt_ids_list.append(prompt_ids)
+            self._gold_labels.append(gold)
+
         rng = random.Random(seed)
-        self.examples: List[Dict[str, torch.Tensor]] = []
+        self.examples: List[Dict[str, torch.Tensor]] = self._build_examples(rng, split)
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Resampling
+    # ------------------------------------------------------------------
+
+    def resample_negatives(self, seed: int) -> None:
+        """Re-sample negatives with a new seed. Call at the start of each epoch."""
+        rng = random.Random(seed)
+        self.examples = self._build_examples(rng)
+
+    def _build_examples(
+        self,
+        rng: random.Random,
+        split: str = "",
+    ) -> List[Dict[str, torch.Tensor]]:
+        """Build ``self.examples`` from stored prompts and gold labels."""
+        examples: List[Dict[str, torch.Tensor]] = []
         skipped = 0
-        for idx, ex in enumerate(raw):
-            encoded = self._encode(ex, rng)
+        for prompt_ids, gold in zip(self._prompt_ids_list, self._gold_labels):
+            encoded = self._encode_from_parts(prompt_ids, gold, rng)
             if encoded is not None:
-                self.examples.append(encoded)
+                examples.append(encoded)
             else:
                 skipped += 1
-
         if skipped:
+            tag = f"/{split}" if split else ""
             print(
-                f"[LedgarRankingDataset/{split}] Skipped {skipped} examples "
-                f"where the prompt alone exceeded max_length={max_length}."
+                f"[LedgarRankingDataset{tag}] Skipped {skipped} examples "
+                f"where the prompt alone exceeded max_length={self.max_length}."
             )
+        return examples
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -166,34 +200,27 @@ class LedgarRankingDataset(Dataset):
             "choice_mask": choice_mask,
         }
 
-    def _encode(
-        self, ex: dict, rng: random.Random
+    def _encode_from_parts(
+        self,
+        prompt_ids: List[int],
+        gold: int,
+        rng: random.Random,
     ) -> Optional[Dict[str, torch.Tensor]]:
         """
-        Encode one LEDGAR example: correct label + sampled negatives.
+        Encode one LEDGAR example from pre-tokenized parts.
 
         The correct candidate is inserted at a random position among the
         negatives to prevent the model from exploiting positional bias.
 
-        Returns ``None`` if the prompt alone (without any label) already
-        exceeds ``max_length`` after left-truncation.
+        Returns ``None`` if the prompt alone exceeds ``max_length`` even
+        without any label tokens appended.
         """
-        gold: int = int(ex["label"])
-        prompt_text = _build_prompt(ex["text"])
-
-        # Tokenize the prompt with BOS (GPT-2 convention).
-        prompt_ids: List[int] = self.tokenizer.encode(
-            prompt_text, add_special_tokens=True
-        )
-
         # Sample negatives: all label indices except the correct one.
         negative_pool = [i for i in range(len(self.label_names)) if i != gold]
         neg_indices: List[int] = rng.sample(
             negative_pool, min(self.num_negatives, len(negative_pool))
         )
 
-        # Build all candidate encodings: correct + negatives.
-        # We'll insert the correct at a random position after encoding.
         correct_enc = self._encode_one(prompt_ids, self._label_ids[gold])
         if correct_enc is None:
             return None
@@ -202,8 +229,7 @@ class LedgarRankingDataset(Dataset):
         for ni in neg_indices:
             enc = self._encode_one(prompt_ids, self._label_ids[ni])
             if enc is None:
-                # Extremely rare: a label name tokenises to >= max_length.
-                # Fall back to an empty-label encoding so we still have C candidates.
+                # Extremely rare: label tokenises to >= max_length; use 1 token.
                 enc = self._encode_one(prompt_ids, self._label_ids[ni][:1])
             neg_encs.append(enc)
 

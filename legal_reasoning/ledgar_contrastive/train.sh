@@ -59,8 +59,10 @@ run_model() {
         --eval_strategy epoch \
         --save_strategy epoch \
         --save_total_limit 2 \
+        --dataloader_num_workers 4 \
         --device mps \
         --seed 42
+        # Add --fp16 (CUDA) or --bf16 (Ampere+ / Apple Silicon MPS) for mixed-precision speedup
 }
 
 # ---------------------------------------------------------------------------

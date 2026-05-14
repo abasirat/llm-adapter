@@ -55,7 +55,7 @@ import numpy as np
 from transformers import EvalPrediction, TrainingArguments
 
 from legal_reasoning.utils import load_model_for_training
-from legal_reasoning.casehold_contrastive.trainer import RankingCollator, RankingTrainer
+from legal_reasoning.casehold_contrastive.trainer import RankingCollator, RankingTrainer, NegativeResamplerCallback
 from .dataset import LedgarRankingDataset
 
 logger = logging.getLogger(__name__)
@@ -345,6 +345,7 @@ def main() -> None:
         margin=args.margin,
         aux_ce_alpha=args.aux_ce_alpha,
     )
+    trainer.add_callback(NegativeResamplerCallback(train_dataset, base_seed=args.seed))
 
     # ------------------------------------------------------------------
     # Train
