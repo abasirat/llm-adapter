@@ -49,7 +49,7 @@ from typing import Dict, List, Tuple
 
 import torch
 import torch.nn.functional as F
-from transformers import Trainer
+from transformers import Trainer, TrainerCallback
 
 
 # ---------------------------------------------------------------------------
@@ -348,3 +348,22 @@ class RankingTrainer(Trainer):
             return loss, None, None
 
         return loss, scores.detach(), labels.detach()
+    
+
+# ---------------------------------------------------------------------------
+# Negative resampling callback
+# ---------------------------------------------------------------------------
+
+class NegativeResamplerCallback(TrainerCallback):
+    """
+    Resample negatives at the start of each epoch so the model sees different
+    negative labels across epochs.
+    """
+
+    def __init__(self, train_dataset, base_seed: int = 42):
+        self.train_dataset = train_dataset
+        self.base_seed = base_seed
+
+    def on_epoch_begin(self, args, state, control, **kwargs):
+        epoch = int(state.epoch) if state.epoch is not None else 0
+        self.train_dataset.resample_negatives(self.base_seed + epoch + 1)    
