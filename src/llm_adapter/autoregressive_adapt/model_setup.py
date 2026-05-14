@@ -73,8 +73,9 @@ def setup_model(model_name='gpt2',
         raise ValueError(f"Unsupported adapter type: {adapter_type}")
     
     # the task specific tailor module
-    model.transformer = LanguageAdapter(model.transformer, num_tailor_layers, dropout=dropout)
-    print_trainable_parameters(model, "Tailored")
+    # disable tailoring for now since it doesn't seem to help and adds a lot of extra parameters
+    #model.transformer = LanguageAdapter(model.transformer, num_tailor_layers, dropout=dropout)
+    #print_trainable_parameters(model, "Tailored")
 
     # Make input and output embeddings trainable by default
     # Note that in GPT-2, input and output embeddings are tied, so we only need to make the input embeddings trainable. If using a model with separate output embeddings, we would also need to make those trainable.
