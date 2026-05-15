@@ -50,6 +50,7 @@ def build_prompt(context: str) -> str:
 def load_model_for_training(
     model_name_or_path: str,
     unfreeze_all: bool = False,
+    unfreeze_lm_head: bool = False,
 ) -> Tuple[torch.nn.Module, PreTrainedTokenizer, Optional[Callable]]:
     """
     Load a causal LM and tokenizer for fine-tuning.
@@ -64,6 +65,10 @@ def load_model_for_training(
         unfreeze_all: If True, make every parameter trainable regardless of
                       what the checkpoint set up.  Useful for full fine-tuning
                       of a base model or for unfreezing an adapter checkpoint.
+        unfreeze_lm_head: If True, make the LM head (and tied input embeddings)
+                          trainable.  Has no effect when unfreeze_all is True.
+                          Only meaningful for adapter checkpoints where the LM
+                          head is frozen by default.
     Returns:
         (model, tokenizer, save_fn)
 
@@ -96,7 +101,10 @@ def load_model_for_training(
         _wechsel_config = raw.get("wechsel_config", None)
         del raw  # free before loading the full model
 
-        model, tokenizer, _ = _load_adapter(model_name_or_path)
+        model, tokenizer, _ = _load_adapter(
+            model_name_or_path,
+            freeze_lm_head=not unfreeze_lm_head,
+        )
 
         # Closure that mirrors llm_adapter.save_model but targets a directory:
         # writes <output_dir>/model.pt + tokenizer files to <output_dir>/.
@@ -129,6 +137,12 @@ def load_model_for_training(
 
     if unfreeze_all:
         for param in model.parameters():
+            param.requires_grad = True
+    elif unfreeze_lm_head:
+        for param in model.lm_head.parameters():
+            param.requires_grad = True
+        # In GPT-2, lm_head is tied to input embeddings; unfreeze those too.
+        for param in model.get_input_embeddings().parameters():
             param.requires_grad = True
 
     return model, tokenizer, save_fn

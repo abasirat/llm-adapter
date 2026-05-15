@@ -124,6 +124,13 @@ def parse_args() -> argparse.Namespace:
         "--unfreeze_all", action="store_true",
         help="Unfreeze all parameters for full fine-tuning.",
     )
+    parser.add_argument(
+        "--unfreeze_lm_head", action="store_true",
+        help=(
+            "Unfreeze the LM head (and tied input embeddings) of an adapter "
+            "checkpoint.  Has no effect when --unfreeze_all is set."
+        ),
+    )
 
     # ── Loss / objective ────────────────────────────────────────────────
     parser.add_argument(
@@ -254,6 +261,7 @@ def main() -> None:
     model, tokenizer, adapter_save_fn = load_model_for_training(
         args.model_name_or_path,
         unfreeze_all=args.unfreeze_all,
+        unfreeze_lm_head=args.unfreeze_lm_head,
     )
 
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)

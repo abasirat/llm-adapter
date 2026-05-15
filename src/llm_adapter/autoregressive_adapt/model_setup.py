@@ -136,7 +136,7 @@ def save_model(
         tokenizer.save_pretrained(tokenizer_path)
         print(f"Tokenizer saved to {tokenizer_path}")
 
-def load_model(param_path, tokenizer_path=None):
+def load_model(param_path, tokenizer_path=None, freeze_lm_head=True):
     saved_params = torch.load(param_path, map_location="cpu", weights_only=False)
 
     model_name = saved_params["model_name"]
@@ -152,6 +152,7 @@ def load_model(param_path, tokenizer_path=None):
         num_tailor_layers=num_tailor_layers,
         wechsel_config=wechsel_config,
         path_to_tokenizer=tokenizer_path,
+        freeze_lm_head=freeze_lm_head,
     )
 
     # Restore trainable params
