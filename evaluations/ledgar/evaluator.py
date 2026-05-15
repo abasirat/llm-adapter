@@ -161,67 +161,55 @@ def _score_labels_batched(
 
         full_texts = [prompt + label_text for label_text in label_texts]
 
-        enc = tokenizer(
-            full_texts,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=max_length,
-            add_special_tokens=False,
-        ).to(device)
+        # Tokenize each full text individually — no batch padding so that
+        # label-token positions are unambiguous regardless of tokenizer.padding_side.
+        per_example_ids = [
+            tokenizer(
+                ft,
+                return_tensors="pt",
+                truncation=True,
+                max_length=max_length,
+                add_special_tokens=False,
+            ).input_ids.to(device)          # (1, L_i)
+            for ft in full_texts
+        ]
 
-        input_ids = enc["input_ids"]
-        attention_mask = enc["attention_mask"]
-
-        outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-        logits = outputs.logits
-
-        shift_logits = logits[:, :-1, :]
-        shift_labels = input_ids[:, 1:]
-        shift_attention = attention_mask[:, 1:]
-
-        log_probs = F.log_softmax(shift_logits, dim=-1)
-
-        token_lp = log_probs.gather(
-            -1,
-            shift_labels.unsqueeze(-1),
-        ).squeeze(-1)
-
-        for i, label_text in enumerate(label_texts):
-            prompt_ids = tokenizer(
+        prompt_len = len(
+            tokenizer(
                 prompt,
                 add_special_tokens=False,
                 truncation=True,
                 max_length=max_length,
             ).input_ids
+        )
 
-            full_ids = tokenizer(
-                full_texts[i],
-                add_special_tokens=False,
-                truncation=True,
-                max_length=max_length,
-            ).input_ids
-
-            label_len = len(full_ids) - len(prompt_ids)
+        for ids in per_example_ids:
+            label_len = ids.shape[1] - prompt_len
 
             if label_len <= 0:
                 scores.append(float("-inf"))
                 continue
 
-            # token_lp position j scores input_ids[j+1]
-            # label starts at token index len(prompt_ids)
-            start_pos = len(prompt_ids) - 1
-            end_pos = start_pos + label_len
+            with torch.no_grad():
+                out = model(ids)
 
-            label_lp = token_lp[i, start_pos:end_pos]
-            label_mask = shift_attention[i, start_pos:end_pos]
+            # shift: logit[t] predicts token[t+1]
+            shift_logits    = out.logits[:, :-1, :]    # (1, L-1, V)
+            shift_label_ids = ids[:, 1:]               # (1, L-1)
 
-            valid_lp = label_lp[label_mask.bool()]
+            log_probs = F.log_softmax(shift_logits, dim=-1)
+            token_lp  = log_probs.gather(-1, shift_label_ids.unsqueeze(-1)).squeeze(-1)  # (1, L-1)
 
-            if valid_lp.numel() == 0:
+            # label tokens are at positions [prompt_len..L-1]; after the shift,
+            # the logits predicting them are at [prompt_len-1..L-2].
+            start_pos = prompt_len - 1
+            end_pos   = start_pos + label_len
+            label_lp  = token_lp[0, start_pos:end_pos]
+
+            if label_lp.numel() == 0:
                 scores.append(float("-inf"))
             else:
-                scores.append(valid_lp.mean().item())
+                scores.append(label_lp.mean().item())
 
     return scores
 
