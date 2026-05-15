@@ -141,9 +141,7 @@ def load_model_for_training(
     elif unfreeze_lm_head:
         for param in model.lm_head.parameters():
             param.requires_grad = True
-        # In GPT-2, lm_head is tied to input embeddings; unfreeze those too.
-        for param in model.get_input_embeddings().parameters():
-            param.requires_grad = True
+        # In GPT-2 lm_head weight is tied to wte; unfreezing lm_head is sufficient.
 
     return model, tokenizer, save_fn
 
