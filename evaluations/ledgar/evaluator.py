@@ -161,18 +161,32 @@ def _score_labels_batched(
 
         full_texts = [prompt + label_text for label_text in label_texts]
 
-        # Tokenize each full text individually — no batch padding so that
-        # label-token positions are unambiguous regardless of tokenizer.padding_side.
-        per_example_ids = [
-            tokenizer(
-                ft,
-                return_tensors="pt",
-                truncation=True,
-                max_length=max_length,
-                add_special_tokens=False,
-            ).input_ids.to(device)          # (1, L_i)
-            for ft in full_texts
-        ]
+        # Force right-padding for the batch so real tokens are left-aligned,
+        # making label-position arithmetic correct regardless of the tokenizer's
+        # default padding_side (adapter tokenizers use padding_side='left').
+        orig_padding_side = tokenizer.padding_side
+        tokenizer.padding_side = "right"
+        enc = tokenizer(
+            full_texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+            add_special_tokens=False,
+        ).to(device)
+        tokenizer.padding_side = orig_padding_side
+
+        input_ids      = enc["input_ids"]        # (B, L_max)
+        attention_mask = enc["attention_mask"]   # (B, L_max)
+
+        outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+
+        shift_logits    = outputs.logits[:, :-1, :]  # (B, L_max-1, V)
+        shift_labels    = input_ids[:, 1:]            # (B, L_max-1)
+        shift_attention = attention_mask[:, 1:]       # (B, L_max-1)
+
+        log_probs = F.log_softmax(shift_logits, dim=-1)
+        token_lp  = log_probs.gather(-1, shift_labels.unsqueeze(-1)).squeeze(-1)  # (B, L_max-1)
 
         prompt_len = len(
             tokenizer(
@@ -183,33 +197,29 @@ def _score_labels_batched(
             ).input_ids
         )
 
-        for ids in per_example_ids:
-            label_len = ids.shape[1] - prompt_len
+        for i in range(len(label_texts)):
+            # attention_mask.sum() gives the unpadded length for this row.
+            full_len  = int(attention_mask[i].sum().item())
+            label_len = full_len - prompt_len
 
             if label_len <= 0:
                 scores.append(float("-inf"))
                 continue
 
-            with torch.no_grad():
-                out = model(ids)
-
-            # shift: logit[t] predicts token[t+1]
-            shift_logits    = out.logits[:, :-1, :]    # (1, L-1, V)
-            shift_label_ids = ids[:, 1:]               # (1, L-1)
-
-            log_probs = F.log_softmax(shift_logits, dim=-1)
-            token_lp  = log_probs.gather(-1, shift_label_ids.unsqueeze(-1)).squeeze(-1)  # (1, L-1)
-
-            # label tokens are at positions [prompt_len..L-1]; after the shift,
-            # the logits predicting them are at [prompt_len-1..L-2].
+            # With right-padding, real tokens are at 0..full_len-1.
+            # After the causal shift, logits predicting label tokens
+            # are at positions [prompt_len-1 .. full_len-2].
             start_pos = prompt_len - 1
             end_pos   = start_pos + label_len
-            label_lp  = token_lp[0, start_pos:end_pos]
 
-            if label_lp.numel() == 0:
+            label_lp   = token_lp[i, start_pos:end_pos]
+            label_mask = shift_attention[i, start_pos:end_pos]
+            valid_lp   = label_lp[label_mask.bool()]
+
+            if valid_lp.numel() == 0:
                 scores.append(float("-inf"))
             else:
-                scores.append(label_lp.mean().item())
+                scores.append(valid_lp.mean().item())
 
     return scores
 
