@@ -1,0 +1,36 @@
+num_epochs: 1
+learning_rate: 1.0e-4
+
+batch_size: 4
+dev_batch_size: 4
+context_size: 1024
+num_workers: 0
+
+adam_beta1: 0.9
+adam_beta2: 0.999
+weight_decay: 0.01
+gradient_clip_norm: 1.0
+
+val_fraction: 0.01
+val_interval: 1000
+
+early_stopping_patience: 3
+early_stopping_min_delta: 1.0e-4
+
+progress_interval: 10
+
+kl_loss_weight: 1.0e-2
+kl_warmup_fraction: 0.2
+kl_schedule: linear
+
+use_amp: true
+compile_model: true
+
+seed: 42
+output_dir: outputs/models
+history_dir: outputs/runs
+
+wandb:
+  enabled: true
+  project_name: llm_adapter_legal
+  log_dir: outputs/runs

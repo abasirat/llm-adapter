@@ -1,0 +1,15 @@
+adapter_type: lora
+
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+
+lora_target_modules:
+  - c_attn
+  - c_proj
+  - c_fc
+
+variational_modeling: false
+shift_regularization: false
+aggregation_strategy: null
+prefix_length: 0

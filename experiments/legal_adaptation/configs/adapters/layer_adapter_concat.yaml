@@ -1,0 +1,17 @@
+adapter_type: layer_adapter
+
+num_aggregation_layers: null
+aggregation_strategy: concat
+
+prefix_length: 0
+
+v_dim: 512
+
+agg_representation_type: pre_mlp
+agg_query_source: final_hidden
+
+variational_modeling: true
+shift_regularization: false
+
+dropout: 0.1
+need_weights: true

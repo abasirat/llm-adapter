@@ -1,0 +1,87 @@
+model_name_or_path: outputs/models/gpt2_layer_adapter_agg-attention_variational.pt
+
+output_file: outputs/models/gpt2_layer_adapter_agg-attention_variational/legal_eval.json
+
+device: auto
+max_examples: 100
+batch_size: 4
+seed: 42
+
+evaluations:
+
+  perplexity:
+    enabled: false
+
+    datasets:
+      - name: pile_of_law
+        split: test
+
+      - name: wikipedia
+        split: validation
+
+
+  lambada:
+    enabled: false
+    split: test
+
+
+  truthfulqa:
+    enabled: false
+    split: validation
+
+
+  casehold:
+    enabled: false
+    split: test
+    prompt_style: legal_reasoning
+    normalize_log_probs: true
+
+
+  ledgar:
+    enabled: false
+    split: test
+    max_label_length: 32
+
+  unfair_tos:
+    enabled: false
+    split: test
+
+
+  style:
+    enabled: true
+    train_classifier: true  # set to true to retrain the classifier at evaluation time
+    classifier_training:
+      legal_dataset: pile-of-law/pile-of-law
+      legal_subset: courtlistener_opinions
+      legal_split: train
+      legal_text_field: text
+      general_dataset: HuggingFaceFW/fineweb
+      general_subset: sample-10BT
+      general_split: train
+      general_text_field: text
+      max_samples: 50000
+      # output_model: path/to/save/legal_style_clf.joblib  # omit to use the bundled default
+    legal_prompts_path: /Users/dsb322/Lab/llm-adapter/src/evaluations/style/legal_prompts/
+    general_prompts_path: /Users/dsb322/Lab/llm-adapter/src/evaluations/style/general_prompts/
+    classifier_path: /Users/dsb322/Lab/llm-adapter/src/evaluations/style/legal_style_clf.joblib
+    min_new_tokens: 20
+    max_new_tokens: 150
+    temperature: 1.0
+    top_p: 0.95
+
+generation:
+  do_sample: true
+  temperature: 1.0
+  top_p: 0.95
+  max_new_tokens: 128
+
+
+logging:
+  save_predictions: true
+  save_per_example: false
+  save_generations: true
+
+output:
+  save_summary_json: true
+  save_summary_csv: true
+  save_raw_results: true

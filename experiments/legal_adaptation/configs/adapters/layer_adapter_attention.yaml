@@ -1,0 +1,21 @@
+adapter_type: layer_adapter
+
+num_aggregation_layers: null
+aggregation_strategy: attention
+
+prefix_length: 0
+
+qk_dim: 32
+v_dim: 512
+num_attention_heads: 4
+attention_temperature: 2.0
+min_attention_temperature: 0.8
+
+agg_representation_type: pre_mlp
+agg_query_source: final_hidden
+
+variational_modeling: true
+shift_regularization: false
+
+dropout: 0.1
+need_weights: true

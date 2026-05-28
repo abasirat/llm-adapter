@@ -1,0 +1,17 @@
+experiment_name: legal_gpt2_adaptation
+output_root: outputs/legal_gpt2_adaptation
+
+seeds: [1, 2, 3]
+
+data_config: configs/data/legal_pile.yaml
+training_config: configs/training/causal_lm.yaml
+eval_config: configs/eval/legal_eval_suite.yaml
+
+models:
+  - configs/models/gpt2-medium.yaml
+  - configs/models/gpt2-large.yaml
+
+adapters:
+  - configs/adapters/layer_adapter_attention.yaml
+  - configs/adapters/layer_adapter_concat.yaml
+  - configs/adapters/lora.yaml
