@@ -31,7 +31,7 @@ events.out.tfevents.*
 *.backup
 wandb/
 models/
-data/
+data
 local_*.py
 adapter copy.py
 attention_fusion.py
