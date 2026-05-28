@@ -1,0 +1,5 @@
+train_bin_paths:
+  - outputs/prepared_datasets/legal_pile_train.bin
+
+dev_bin_paths: []
+dev_bin_names: []

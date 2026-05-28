@@ -1,0 +1,5 @@
+model_name: gpt2-medium
+tokenizer_path: null
+freeze_lm_heads: true
+checkpoint: null
+compile_model: true
