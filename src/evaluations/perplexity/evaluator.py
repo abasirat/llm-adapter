@@ -1,13 +1,23 @@
 """
 Perplexity evaluator.
 
-Measures average perplexity of a causal language model on three language
-corpora drawn from XNLI:
-  - English  (en)
-  - Danish   (da)
-  - Farsi    (fa)
+Measures average perplexity of a causal language model on datasets defined
+under the ``perplexity.datasets`` section of the evaluation config.
 
-Lower perplexity on a language corpus indicates better language-model fit.
+Each dataset entry requires:
+  - name:  short alias (e.g. pile_of_law, wikipedia) or a HuggingFace path.
+  - split: dataset split to load (e.g. test, validation, train).
+
+Optional per-dataset fields:
+  - subset:     HuggingFace dataset config/subset name.
+  - text_field: column that contains the raw text (default: ``"text"``).
+
+A built-in registry maps common aliases to their HuggingFace identifiers and
+default text fields; unrecognised names are treated as HuggingFace paths
+directly.
+
+Perplexity is computed with a sliding-window approach so that documents longer
+than the model's context window are handled correctly.
 
 Public interface:
     evaluate(model_name_or_path, device, **kwargs) -> dict
@@ -23,18 +33,74 @@ from evaluations.utils import load_model
 
 
 # ---------------------------------------------------------------------------
-# Per-text perplexity
+# Built-in dataset registry
+# Maps short alias -> default HuggingFace load_dataset kwargs + text_field.
 # ---------------------------------------------------------------------------
 
-def _perplexity(model, tokenizer, text: str, device: str) -> float:
-    """Return the perplexity of *text* under *model*."""
-    inputs = tokenizer(text, return_tensors="pt").to(device)
-    input_ids = inputs["input_ids"]
+_DATASET_REGISTRY: Dict[str, Dict[str, Any]] = {
+    "pile_of_law": {
+        "path": "pile-of-law/pile-of-law",
+        "name": "all",
+        "text_field": "text",
+    },
+    "wikipedia": {
+        "path": "wikipedia",
+        "name": "20220301.en",
+        "text_field": "text",
+    },
+}
 
-    with torch.no_grad():
-        loss = model(input_ids, labels=input_ids).loss
 
-    return torch.exp(loss).item()
+# ---------------------------------------------------------------------------
+# Sliding-window perplexity
+# ---------------------------------------------------------------------------
+
+def _perplexity(
+    model,
+    tokenizer,
+    text: str,
+    device: str,
+    max_length: int = 1024,
+    stride: int = 512,
+) -> float:
+    """
+    Compute the perplexity of *text* using a sliding-window approach.
+
+    For texts shorter than *max_length* tokens a single forward pass is used.
+    For longer texts the window slides by *stride* tokens and the NLL is
+    accumulated only over the non-overlapping (new) portion of each window,
+    which is the standard method for evaluating LM perplexity on long docs.
+    """
+    input_ids = tokenizer(text, return_tensors="pt").input_ids.to(device)
+    seq_len = input_ids.size(1)
+
+    nlls: List[torch.Tensor] = []
+    prev_end = 0
+
+    for begin in range(0, seq_len, stride):
+        end = min(begin + max_length, seq_len)
+        target_len = end - prev_end  # tokens actually scored in this window
+
+        window_ids = input_ids[:, begin:end]
+
+        # Mask the overlapping prefix so it does not contribute to the loss.
+        labels = window_ids.clone()
+        labels[:, : window_ids.size(1) - target_len] = -100
+
+        with torch.no_grad():
+            loss = model(window_ids, labels=labels).loss
+
+        nlls.append(loss * target_len)
+        prev_end = end
+
+        if end == seq_len:
+            break
+
+    if prev_end == 0:
+        return float("inf")
+
+    avg_nll = torch.stack(nlls).sum() / prev_end
+    return torch.exp(avg_nll).item()
 
 
 def _avg_perplexity(
@@ -42,14 +108,18 @@ def _avg_perplexity(
     tokenizer,
     texts: List[str],
     device: str,
+    max_length: int = 1024,
+    stride: int = 512,
     desc: str = "",
 ) -> Dict[str, Any]:
-    """Compute average perplexity over a list of texts, skipping errors."""
+    """Compute average perplexity over *texts*, skipping samples that error."""
     values: List[float] = []
 
     for text in tqdm(texts, desc=desc or "Perplexity"):
         try:
-            values.append(_perplexity(model, tokenizer, text, device))
+            ppl = _perplexity(model, tokenizer, text, device, max_length, stride)
+            if ppl != float("inf") and ppl == ppl:  # skip inf and NaN
+                values.append(ppl)
         except Exception as exc:
             print(f"  [perplexity] skipping sample: {exc}")
 
@@ -65,60 +135,50 @@ def _avg_perplexity(
 
 
 # ---------------------------------------------------------------------------
-# Language corpus loaders
+# Dataset loading helpers
 # ---------------------------------------------------------------------------
 
-_XNLI_LANGS = {
-    "en": "English",
-    "da": "Danish",
-    "fa": "Farsi",
-}
+def _resolve_dataset_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Resolve a YAML dataset spec to ``load_dataset`` kwargs and a text field.
+
+    The spec must contain at least ``name`` and ``split``.  Optional keys
+    ``subset`` and ``text_field`` override registry defaults.
+    """
+    alias = spec["name"]
+    split = spec["split"]
+
+    registry_entry = dict(_DATASET_REGISTRY.get(alias, {"path": alias}))
+    text_field = registry_entry.pop("text_field", "text")
+
+    if "subset" in spec:
+        registry_entry["name"] = spec["subset"]
+    if "text_field" in spec:
+        text_field = spec["text_field"]
+
+    load_kwargs = {**registry_entry, "split": split}
+    return {"load_kwargs": load_kwargs, "text_field": text_field, "alias": alias}
 
 
-def _load_xnli_texts(lang: str, max_samples: int = 500) -> List[str]:
-    """
-    Load up to *max_samples* premise strings from the XNLI validation split
-    for *lang*.  Returns an empty list if the language is unavailable.
-    """
+def _load_texts(
+    load_kwargs: Dict[str, Any],
+    text_field: str,
+    max_samples: int,
+) -> List[str]:
+    """Stream up to *max_samples* non-empty texts from a HuggingFace dataset."""
     try:
-        ds = load_dataset("xnli", lang, split="validation")
-        texts = [ex["premise"][:500] for ex in ds][:max_samples]
+        ds = load_dataset(**load_kwargs, streaming=True, trust_remote_code=False)
+        texts: List[str] = []
+        for ex in ds:
+            if len(texts) >= max_samples:
+                break
+            val = ex.get(text_field, "")
+            if isinstance(val, str) and val.strip():
+                texts.append(val)
         return texts
     except Exception as exc:
-        print(f"  [perplexity] could not load XNLI '{lang}': {exc}")
+        print(f"  [perplexity] could not load dataset {load_kwargs!r}: {exc}")
         return []
-
-
-# ---------------------------------------------------------------------------
-# Benchmark evaluation
-# ---------------------------------------------------------------------------
-
-def _run_evaluation(
-    model,
-    tokenizer,
-    device: str,
-    languages: List[str],
-    max_samples: int = 500,
-) -> Dict[str, Any]:
-    results: Dict[str, Any] = {}
-
-    for lang in languages:
-        lang_name = _XNLI_LANGS.get(lang, lang)
-        texts = _load_xnli_texts(lang, max_samples)
-
-        if not texts:
-            results[lang] = {"error": f"no samples available for '{lang}'"}
-            continue
-
-        stats = _avg_perplexity(
-            model, tokenizer, texts, device,
-            desc=f"Perplexity ({lang_name})",
-        )
-        stats["language"] = lang_name
-        stats["corpus"] = f"XNLI ({lang_name})"
-        results[lang] = stats
-
-    return results
 
 
 # ---------------------------------------------------------------------------
@@ -128,42 +188,73 @@ def _run_evaluation(
 def evaluate(
     model_name_or_path: str,
     device: str,
-    languages: Optional[List[str]] = None,
-    max_samples: int = 500,
+    datasets: Optional[List[Dict[str, Any]]] = None,
     max_examples: Optional[int] = None,
+    max_length: int = 1024,
+    stride: int = 512,
     **kwargs,
 ) -> dict:
     """
-    Evaluate perplexity of a causal LM on language-specific XNLI corpora.
+    Evaluate perplexity of a causal LM on each dataset in *datasets*.
 
     Args:
         model_name_or_path: HuggingFace model name or local adapter path.
         device: Torch device string.
-        languages: List of XNLI language codes to evaluate.
-                   Defaults to ["en", "da", "fa"].
-        max_samples: Number of text snippets to evaluate per language.
-        max_examples: Alias for max_samples (used by the central runner).
+        datasets: List of dataset spec dicts corresponding to the
+                  ``perplexity.datasets`` list in the evaluation config.
+                  Each dict must have ``name`` and ``split``; optional keys
+                  are ``subset`` and ``text_field``.
+        max_examples: Maximum number of examples per dataset.  Defaults to 500.
+        max_length: Token window size for sliding-window perplexity.
+        stride: Stride for the sliding window (must be <= *max_length*).
 
     Returns:
-        dict with per-language scalar metrics prefixed by language code:
-            en_avg_perplexity, da_avg_perplexity, fa_avg_perplexity, …
-    """
-    if languages is None:
-        languages = ["en", "da", "fa"]
+        dict with per-dataset scalar metrics (dataset name used as prefix)::
 
-    n_samples = max_examples if max_examples is not None else max_samples
+            <name>_avg_perplexity
+            <name>_num_samples
+
+        plus a ``"_raw"`` key containing full per-dataset statistics.
+    """
+    if not datasets:
+        print("[perplexity] No datasets configured; skipping.")
+        return {"_raw": {}}
+
+    n_samples = max_examples if max_examples is not None else 500
 
     model, tokenizer = load_model(model_name_or_path, device)
-    raw = _run_evaluation(model, tokenizer, device, languages, n_samples)
+
+    raw: Dict[str, Any] = {}
+
+    for spec in datasets:
+        resolved = _resolve_dataset_spec(spec)
+        alias = resolved["alias"]
+        label = f"{alias}/{spec['split']}"
+
+        print(f"\n[perplexity] Loading {label} ...")
+        texts = _load_texts(resolved["load_kwargs"], resolved["text_field"], n_samples)
+
+        if not texts:
+            raw[alias] = {"error": f"no samples available for '{label}'"}
+            continue
+
+        stats = _avg_perplexity(
+            model, tokenizer, texts, device,
+            max_length=max_length,
+            stride=stride,
+            desc=f"Perplexity ({label})",
+        )
+        stats["dataset"] = label
+        raw[alias] = stats
 
     # Flatten to scalar metrics for the summary table.
     flat: Dict[str, Any] = {}
-    for lang, stats in raw.items():
+    for name, stats in raw.items():
         if "error" in stats:
-            flat[f"{lang}_avg_perplexity"] = None
+            flat[f"{name}_avg_perplexity"] = None
         else:
-            flat[f"{lang}_avg_perplexity"] = stats.get("avg_perplexity")
-            flat[f"{lang}_num_samples"] = stats.get("num_samples")
+            flat[f"{name}_avg_perplexity"] = stats.get("avg_perplexity")
+            flat[f"{name}_num_samples"] = stats.get("num_samples")
 
     flat["_raw"] = raw
     return flat

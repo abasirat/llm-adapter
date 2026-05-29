@@ -10,14 +10,16 @@ seed: 42
 evaluations:
 
   perplexity:
-    enabled: false
+    enabled: true
 
     datasets:
       - name: pile_of_law
-        split: test
+        split: validation
+        subset: courtlistener_opinions 
 
       - name: wikipedia
-        split: validation
+        split: train
+        subset: 20220301.en
 
 
   lambada:
@@ -48,8 +50,8 @@ evaluations:
 
 
   style:
-    enabled: true
-    train_classifier: true  # set to true to retrain the classifier at evaluation time
+    enabled: false
+    train_classifier: false  # set to true to retrain the classifier at evaluation time
     classifier_training:
       legal_dataset: pile-of-law/pile-of-law
       legal_subset: courtlistener_opinions
