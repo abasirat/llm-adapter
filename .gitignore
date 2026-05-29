@@ -36,7 +36,10 @@ local_*.py
 adapter copy.py
 attention_fusion.py
 cross-attention.py
+local_*.py
+local_*.sh
 model_eval
 model_eval/
 model_eval/
 *.joblib
+outputs/

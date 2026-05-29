@@ -3,13 +3,19 @@ output_root: outputs/legal_gpt2_adaptation
 
 seeds: [1, 2, 3]
 
-data_config: configs/data/legal_pile.yaml
+train_data_config: configs/data/tokenized_data.yaml
 training_config: configs/training/causal_lm.yaml
 eval_config: configs/eval/legal_eval_suite.yaml
 
+data:
+  train: configs/data/legal_pile_train.yaml
+  val: configs/data/legal_pile_val.yaml
+  test: configs/data/legal_pile_test.yaml
+
 models:
-  - configs/models/gpt2-medium.yaml
-  - configs/models/gpt2-large.yaml
+  - configs/models/gpt2.yaml
+  #- configs/models/gpt2-medium.yaml
+  #- configs/models/gpt2-large.yaml
 
 adapters:
   - configs/adapters/layer_adapter_attention.yaml

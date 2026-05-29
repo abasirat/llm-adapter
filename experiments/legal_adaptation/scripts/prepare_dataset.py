@@ -252,10 +252,10 @@ def main():
     split = cfg.get("split", "train")
     output_prefix = cfg["output_prefix"]
 
-    bin_path = f"{output_prefix}.bin"
-    meta_path = f"{output_prefix}.json"
+    bin_path = str(Path.joinpath(Path(output_prefix), "data.bin"))
+    meta_path = str(Path.joinpath(Path(output_prefix), "data.json"))
 
-    Path(bin_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(output_prefix).mkdir(parents=True, exist_ok=True)
 
     logger.info("Output binary: %s", bin_path)
     logger.info("Output metadata: %s", meta_path)

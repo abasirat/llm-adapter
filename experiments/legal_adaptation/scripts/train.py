@@ -621,7 +621,13 @@ def main():
     parser.add_argument("--model_config", type=str, required=True)
     parser.add_argument("--adapter_config", type=str, required=True)
     parser.add_argument("--training_config", type=str, required=True)
-    parser.add_argument("--data_config", type=str, required=True)
+    parser.add_argument("--data_config", type=str, required=False) 
+    parser.add_argument("--train_bin_path", type=str, default=None, help="Path to training token-bin file (overrides data config)")
+    parser.add_argument("--dev_bin_path", type=str, default=None, help="Path to dev token-bin file (overrides data config)")
+    parser.add_argument("--model_path", type=str, default=None, help="Path to save the trained model (overrides training config)")
+    parser.add_argument("--experiment_name", type=str, default=None, help="Name of the experiment for logging purposes (overrides training config)")
+    parser.add_argument("--history_path", type=str, default=None, help="Path to save training history as JSONL (overrides training config)")
+    parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility (overrides training config)")
 
     args = parser.parse_args()
 
@@ -632,13 +638,15 @@ def main():
     model_cfg = load_yaml(args.model_config)
     adapter_cfg = load_yaml(args.adapter_config)
     training_cfg = load_yaml(args.training_config)
-    data_cfg = load_yaml(args.data_config)
+    data_cfg = load_yaml(args.data_config) if args.data_config else {}
 
     # -------------------------
     # Resolve config values
     # -------------------------
 
     seed = training_cfg.get("seed", 42)
+    if args.seed is not None:
+        seed = args.seed
     set_seed(seed)
 
     model_name = model_cfg["model_name"]
@@ -677,7 +685,13 @@ def main():
     wandb_log_dir = wandb_cfg.get("log_dir", None)
 
     train_bin_paths = data_cfg.get("train_bin_paths", [])
+    if args.train_bin_path:
+        train_bin_paths = [args.train_bin_path]
+
     dev_bin_paths = data_cfg.get("dev_bin_paths", [])
+    if args.dev_bin_path:
+        dev_bin_paths = [args.dev_bin_path]
+
     dev_bin_names = data_cfg.get("dev_bin_names", None)
 
     if len(train_bin_paths) == 0:
@@ -723,26 +737,36 @@ def main():
     # Model path and experiment description
     #-------------------------
 
-    experiment_description = f"{model_name}_{adapter_type}"
-    if adapter_type == "layer_adapter":
-        experiment_description += f"_agg-{aggregation_strategy}"
-        if variational_modeling:
-            experiment_description += "_variational"
-        if shift_regularization:
-            experiment_description += "_shiftreg"
-        
-    elif adapter_type == "lora":
-        experiment_description += f"_r{lora_r}_alpha{lora_alpha}_drop{lora_dropout}"
+    if args.experiment_name:
+        experiment_description = args.experiment_name
     else:
-        raise ValueError(f"Unknown adapter_type: {adapter_type}")
+        experiment_description = f"{model_name}_{adapter_type}"
+        if adapter_type == "layer_adapter":
+            experiment_description += f"_agg-{aggregation_strategy}"
+            if variational_modeling:
+                experiment_description += "_variational"
+            if shift_regularization:
+                experiment_description += "_shiftreg"
+            experiment_description += f"_qk{qk_dim}_v{v_dim}_heads{num_attention_heads}"
+            
+        elif adapter_type == "lora":
+            experiment_description += f"_r{lora_r}_alpha{lora_alpha}_drop{lora_dropout}"
+        else:
+            raise ValueError(f"Unknown adapter_type: {adapter_type}")
+        experiment_description += f"_bs{batch_size}_lr{learning_rate:.0e}_ctx{context_size}_epochs{num_epochs}_seed{seed}"
     
-    model_path = f"{training_cfg['output_dir']}/{experiment_description}.pt"
+    model_path = args.model_path if args.model_path else f"{training_cfg['output_dir']}/{experiment_description}.pt"
 
     history_dir = os.path.join(training_cfg.get("history_dir", "history"), experiment_description)
     history_path = f"{history_dir}/train_history.jsonl"
+    if args.history_path:
+        history_path = args.history_path
     os.makedirs(os.path.dirname(history_dir), exist_ok=True)
+
+    print(f"Experiment description: {experiment_description}")
     print(f"Model checkpoints will be saved to: {model_path}")
     print(f"Training history will be saved to: {history_path}")
+
 
     # -------------------------
     # Logging
