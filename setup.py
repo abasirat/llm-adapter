@@ -16,6 +16,9 @@ setup(
         "tqdm",
         "wandb",
         "datasets",
+        "matplotlib",
+        "numpy",
+        "pyyaml",
     ],
     extras_require={
         "dev": [

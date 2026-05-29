@@ -1,0 +1,142 @@
+# ── Global matplotlib style ────────────────────────────────────────────────────
+# Any named matplotlib style or path to a .mplstyle file.  Remove to use the
+# default style.
+# style: seaborn-v0_8-whitegrid
+
+output:
+  format: png      # pdf | png | svg | eps
+  dpi: 150
+  directory: outputs/plots
+
+
+# ── Runs ──────────────────────────────────────────────────────────────────────
+# Paths are relative to the experiment root (parent of the configs/ folder).
+# Each run may provide a `history` path (for source: history figures) and/or
+# an `eval` path (for source: eval figures).  Add more entries to overlay
+# multiple runs on the same figure.
+runs:
+  - label: "Layer Adapter (seed 1)"
+    history: outputs/legal_pile_gpt2_adaptation/gpt2_layer_adapter_attention_seed1/train/history.jsonl
+    eval: outputs/legal_pile_gpt2_adaptation/gpt2_layer_adapter_attention_seed1/eval/results.json
+
+
+# ── Figures ───────────────────────────────────────────────────────────────────
+figures:
+
+  # ── Training loss ───────────────────────────────────────────────────────────
+  - name: train_loss
+    title: "Training Loss"
+    source: history          # reads history.jsonl
+    x_field: step
+    y_fields:
+      - field: "train/total_loss"
+        label: "Total Loss"
+        linestyle: "-"
+        linewidth: 1.5
+      - field: "train/lm_loss"
+        label: "LM Loss"
+        linestyle: "--"
+        linewidth: 1.2
+    smooth:
+      method: ema            # ema | window
+      alpha: 0.05            # for ema: smaller = smoother; for window: ignored
+      # window: 10           # used when method: window
+    x_axis:
+      label: "Training Step"
+      # ticks:
+      #   start: 0
+      #   stop: 5000
+      #   step: 500
+    y_axis:
+      label: "Loss"
+      scale: linear          # linear | log
+    figsize: [8, 5]
+    legend:
+      location: upper right
+    grid: true
+
+  # ── Validation loss ─────────────────────────────────────────────────────────
+  # Note: val_loss is currently only sent to WandB in train.py, not written to
+  # history.jsonl.  To enable this plot, add the following lines inside the
+  # val_interval block in train.py (after the wandb.log call on line ~573):
+  #
+  #   if history_path:
+  #       with open(history_path, "a", encoding="utf-8") as _f:
+  #           _f.write(json.dumps({"step": step, "val/loss": avg_val_loss}) + "\n")
+  - name: val_loss
+    title: "Validation Loss"
+    source: history
+    x_field: step
+    y_fields:
+      - field: "val/loss"
+        label: "Validation Loss"
+        color: "tab:orange"
+    x_axis:
+      label: "Training Step"
+    y_axis:
+      label: "Loss"
+      scale: linear
+    figsize: [8, 5]
+    grid: true
+
+  # ── Learning rate schedule ──────────────────────────────────────────────────
+  - name: learning_rate
+    title: "Learning Rate Schedule"
+    source: history
+    x_field: step
+    y_fields:
+      - field: "train/learning_rate"
+        label: "Learning Rate"
+        color: "tab:green"
+    x_axis:
+      label: "Training Step"
+    y_axis:
+      label: "Learning Rate"
+      scale: linear
+    figsize: [8, 4]
+    legend: false
+    grid: true
+
+  # ── KL divergence (variational adapter only) ────────────────────────────────
+  - name: kl_loss
+    title: "KL Divergence"
+    source: history
+    x_field: step
+    y_fields:
+      - field: "variational/kl_mu_term"
+        label: "KL \u03bc term"
+        linestyle: "-"
+      - field: "variational/kl_var_term"
+        label: "KL \u03c3\u00b2 term"
+        linestyle: "-"
+      - field: "variational/batch_kl_loss"
+        label: "Batch KL"
+        linestyle: "--"
+    x_axis:
+      label: "Training Step"
+    y_axis:
+      label: "KL Loss"
+      scale: log
+    figsize: [8, 5]
+    legend:
+      location: lower right
+    grid: true
+
+  # ── Perplexity (evaluation) ─────────────────────────────────────────────────
+  - name: perplexity
+    title: "Perplexity"
+    source: eval             # reads results.json
+    metric: perplexity       # top-level key under results{}
+    fields:
+      - key: pile_of_law_avg_perplexity
+        label: "Pile of Law"
+      - key: wikipedia_avg_perplexity
+        label: "Wikipedia"
+    y_axis:
+      label: "Perplexity"
+      scale: linear
+    figsize: [6, 5]
+    grid:
+      enabled: true
+      axis: y
+      alpha: 0.3
