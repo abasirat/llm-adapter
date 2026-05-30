@@ -261,7 +261,7 @@ class LinearTemperatureScheduler:
         temperature = self.max_temperature - progress * (self.max_temperature - self.min_temperature)
         return temperature
     
-def validate(model, val_dataloader, device, device_type, use_amp):
+def validate(model, val_dataloader, device, device_type, use_amp, progress_interval=10):
     """
     Perform validation on a dataset and compute average loss.
 
@@ -271,7 +271,7 @@ def validate(model, val_dataloader, device, device_type, use_amp):
         device: torch.device to run on
         device_type: device type ('cuda', 'mps', 'cpu')
         use_amp: whether to use automatic mixed precision
-
+        progress_interval: how often to update the progress bar
     Returns:
         avg_loss: average loss across all validation batches
         num_batches: number of batches processed
@@ -280,14 +280,19 @@ def validate(model, val_dataloader, device, device_type, use_amp):
     val_loss = 0.0
     num_batches = 0
 
+    progress_bar = tqdm(desc="Validating", total=len(val_dataloader))
     with torch.no_grad():
-        for val_batch, _ in tqdm(val_dataloader, desc="Validating"):
+        for val_batch, _ in val_dataloader:
             val_batch = {k: v.to(device) for k, v in val_batch.items()}
-            #with torch.autocast(device_type=device_type, dtype=torch.float16, enabled=use_amp):
-            outputs = model(**val_batch)
+            with torch.autocast(device_type=device_type, dtype=torch.float16, enabled=use_amp):
+                outputs = model(**val_batch)
             loss = outputs.loss
             val_loss += loss.detach().float().item()
             num_batches += 1
+            if num_batches % progress_interval == 0 or num_batches >= len(val_dataloader):
+                update = progress_interval if num_batches % progress_interval == 0 else (num_batches % progress_interval)
+                progress_bar.update(update)
+            
 
     avg_loss = val_loss / max(num_batches, 1)
     return avg_loss, num_batches
@@ -569,7 +574,7 @@ def train(
             if (i + 1) % val_interval == 0: 
                 # Early stopping check (training-based, only if no validation set)
                 if val_dataloader is not None and early_stopping_patience > 0:
-                    avg_val_loss, _ = validate(raw_model, val_dataloader, device, device_type, use_amp) # Note: the loss does not include the KL divergence component, since that is not computed during validation.  This means that when using variational modeling, the absolute value of the validation loss may not be directly comparable to the training loss, but it can still be used for early stopping based on relative improvements.
+                    avg_val_loss, _ = validate(raw_model, val_dataloader, device, device_type, use_amp, progress_interval) # Note: the loss does not include the KL divergence component, since that is not computed during validation.  This means that when using variational modeling, the absolute value of the validation loss may not be directly comparable to the training loss, but it can still be used for early stopping based on relative improvements.
                     wandb.log({"val_loss": avg_val_loss}, step=step)
                     print(f"Val Loss: {avg_val_loss:.4f}")
 
@@ -596,7 +601,7 @@ def train(
                 
                 if dev_dataloaders is not None:
                     for dev_name, dev_loader in dev_dataloaders.items():
-                        avg_dev_loss, _ = validate(raw_model, dev_loader, device, device_type, use_amp)
+                        avg_dev_loss, _ = validate(raw_model, dev_loader, device, device_type, use_amp, progress_interval)
                         wandb.log({f"{dev_name}_loss": avg_dev_loss}, step=step)
                         print(f"{dev_name} Loss: {avg_dev_loss:.4f}")
 
