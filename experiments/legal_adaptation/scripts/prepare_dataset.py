@@ -159,9 +159,9 @@ def tokenize_iterator(
             total_tokens += len(ids)
             docs_written += 1
 
-            progress_bar.update(len(ids))
             if len(write_buffer) >= chunk_size * 256:
                 flush_buffer(write_buffer, out_file, dtype)
+                progress_bar.update(len(write_buffer))
                 write_buffer = []
 
             if limit_reached:
@@ -170,6 +170,7 @@ def tokenize_iterator(
 
         if write_buffer:
             flush_buffer(write_buffer, out_file, dtype)
+            progress_bar.update(len(write_buffer))
 
     return {
         "total_tokens": total_tokens,
@@ -200,6 +201,8 @@ def parse_args():
 
     parser.add_argument("--chunk_size", type=int, default=None)
     parser.add_argument("--max_bin_size_gb", type=float, default=None)
+
+    parser.add_argument("--progress_interval", type=int, default=10, help="Log progress every N documents.")
 
     return parser.parse_args()
 
