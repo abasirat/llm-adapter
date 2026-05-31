@@ -106,10 +106,10 @@ for MODEL_CONFIG in "${MODELS[@]}"; do
   for ADAPTER_CONFIG in "${ADAPTERS[@]}"; do
     for SEED in "${SEEDS[@]}"; do
         run_experiment "$MODEL_CONFIG" "$ADAPTER_CONFIG" "$SEED" &
-        (( job_count++ ))
+        (( ++job_count ))
         if (( job_count >= MAX_PARALLEL )); then
           wait -n 2>/dev/null || wait
-          (( job_count-- ))
+          (( --job_count ))
         fi
     done
   done

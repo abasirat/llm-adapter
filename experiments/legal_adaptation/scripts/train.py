@@ -792,6 +792,8 @@ def main():
     parser.add_argument("--experiment_name", type=str, default=None, help="Name of the experiment for logging purposes (overrides training config)")
     parser.add_argument("--history_path", type=str, default=None, help="Path to save training history as JSONL (overrides training config)")
     parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility (overrides training config)")
+    parser.add_argument("--max_train_tokens", type=int, default=None,
+                        help="Maximum number of tokens used for training (overrides training config)")
     parser.add_argument("--continue-training", type=str, default=None, dest="continue_training",
                         help="Path to a .training_status.json file to resume an interrupted training run")
 
@@ -840,6 +842,10 @@ def main():
     val_fraction = training_cfg.get("val_fraction", 0.0)
     val_interval = training_cfg.get("val_interval", 1000)
     progress_interval = training_cfg.get("progress_interval", 100)
+
+    max_train_tokens = training_cfg.get("max_train_tokens", None)
+    if args.max_train_tokens is not None:
+        max_train_tokens = args.max_train_tokens
 
     kl_loss_weight = training_cfg.get("kl_loss_weight", 1e-2)
     kl_warmup_fraction = training_cfg.get("kl_warmup_fraction", 0.2)
@@ -1080,12 +1086,21 @@ def main():
     val_datasets = []
     dev_datasets = []
 
+    tokens_per_path = (
+        max_train_tokens // len(train_bin_paths)
+        if max_train_tokens is not None
+        else None
+    )
+    if tokens_per_path is not None:
+        print(f"Limiting training to {max_train_tokens:,} tokens total ({tokens_per_path:,} per path).")
+
     for train_bin_path in train_bin_paths:
         dataset = TokenBinDataset(
             train_bin_path,
             context_size=context_size,
             start_token=0,
             end_token=None,
+            max_tokens=tokens_per_path,
         )
 
         if val_fraction > 0:
