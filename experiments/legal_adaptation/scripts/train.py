@@ -1047,6 +1047,7 @@ def main():
                 lora_alpha=lora_alpha,
                 target_modules=lora_target_modules,
                 lora_dropout=lora_dropout,
+                fan_in_fan_out=True, 
             )
 
         else:

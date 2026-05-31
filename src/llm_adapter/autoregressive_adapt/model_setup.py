@@ -64,6 +64,12 @@ def setup_model(model_name='gpt2',
         print_trainable_parameters(model, "Layer Adapted")
     elif adapter_type == 'lora':
         model = get_peft_model(model, adapter_config)
+
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
+
+        model.config.use_cache = False
+        
         dropout = adapter_config.lora_dropout
         print_trainable_parameters(model, "Lora")
     elif adapter_type == 'none':
