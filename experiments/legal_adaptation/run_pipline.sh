@@ -16,7 +16,7 @@ ADAPTERS=(
 )
 
 data_prepare=false
-train=false
+train=true
 evaluate=true
 
 # data preparation
@@ -53,6 +53,7 @@ for MODEL_CONFIG in "${MODELS[@]}"; do
       CHECKPOINT_PATH="${RUN_DIR}/train/checkpoint"
       TRAIN_HISTORY_PATH="${RUN_DIR}/train/history.jsonl"
       EVAL_OUTPUT="${RUN_DIR}/eval/results.json"
+      TRAIN_STATUS_PATH="${RUN_DIR}/train/checkpoint.training_status.json"
 
       mkdir -p "${RUN_DIR}/train"
       mkdir -p "${RUN_DIR}/eval"
@@ -61,6 +62,8 @@ for MODEL_CONFIG in "${MODELS[@]}"; do
       echo "Running: ${RUN_NAME}"
       echo "Checkpoint: ${CHECKPOINT_PATH}"
       echo "Eval output: ${EVAL_OUTPUT}"
+      echo "Train history: ${TRAIN_HISTORY_PATH}"
+      echo "Train status: ${TRAIN_STATUS_PATH}"
       echo "=================================================="
 
       if [ "$train" = true ]; then
@@ -73,7 +76,8 @@ for MODEL_CONFIG in "${MODELS[@]}"; do
             --train_bin_path "${BINARY_TOKENIZED_TRAIN_PATH}" \
             --history_path "${TRAIN_HISTORY_PATH}" \
             --experiment_name "${RUN_NAME}" \
-            --seed "${SEED}"
+            --seed "${SEED}" \
+            --continue-training "${TRAIN_STATUS_PATH}"
       else
         echo "Skipping training for ${RUN_NAME}..."
       fi

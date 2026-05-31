@@ -297,6 +297,81 @@ def validate(model, val_dataloader, device, device_type, use_amp, progress_inter
     avg_loss = val_loss / max(num_batches, 1)
     return avg_loss, num_batches
 
+
+def save_training_status(
+    status_path,
+    state_path,
+    checkpoint_path,
+    best_checkpoint_path,
+    epoch,
+    step,
+    batch_index,
+    best_val_loss,
+    patience_counter,
+    optimizer,
+    scaler,
+    scheduler,
+    kl_scheduler,
+    temp_scheduler,
+    epoch_total_loss=0.0,
+    epoch_num_batches=0,
+):
+    """Save resumable training state to a JSON status file and a .pt state file."""
+    state = {
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scaler_state_dict": scaler.state_dict(),
+        "rng_state": {
+            "torch": torch.get_rng_state(),
+            "numpy": np.random.get_state(),
+            "python": random.getstate(),
+        },
+    }
+    if torch.cuda.is_available():
+        state["rng_state"]["cuda"] = torch.cuda.get_rng_state_all()
+    torch.save(state, state_path)
+
+    status = {
+        "checkpoint_path": checkpoint_path,
+        "best_checkpoint_path": best_checkpoint_path,
+        "state_path": state_path,
+        "epoch": epoch,
+        "step": step,
+        "batch_index": batch_index,
+        "best_val_loss": best_val_loss if best_val_loss != float('inf') else None,
+        "patience_counter": patience_counter,
+        "scheduler_step_count": scheduler.step_count if scheduler is not None else None,
+        "kl_scheduler_step_count": kl_scheduler.step_count if kl_scheduler is not None else None,
+        "temp_scheduler_step_count": temp_scheduler.step_count if temp_scheduler is not None else None,
+        "epoch_total_loss": epoch_total_loss,
+        "epoch_num_batches": epoch_num_batches,
+        "timestamp": datetime.now().isoformat(),
+    }
+
+    with open(status_path, "w", encoding="utf-8") as f:
+        json.dump(status, f, indent=2)
+    print(f"Training status saved to {status_path}")
+
+
+def load_training_status(status_path):
+    """Load training status JSON and the accompanying .pt state file."""
+    if not os.path.exists(status_path):
+        raise FileNotFoundError(f"Training status file not found: {status_path}")
+    with open(status_path, "r", encoding="utf-8") as f:
+        status = json.load(f)
+
+    state_path = status.get("state_path")
+    if not state_path or not os.path.exists(state_path):
+        raise FileNotFoundError(f"Training state file not found: {state_path}")
+
+    state = torch.load(state_path, map_location="cpu", weights_only=False)
+    status["_state"] = state
+
+    if status.get("best_val_loss") is None:
+        status["best_val_loss"] = float('inf')
+
+    return status
+
+
 def train(
     model,
     train_dataloader,
@@ -323,7 +398,8 @@ def train(
     layer_adapter_max_temperature=1.0,
     layer_adapter_min_temperature=0.8,
     aggregation_strategy="attention",
-    history_path=None
+    history_path=None,
+    resume_state=None
 ):
     raw_model = model.to(device)
     trainable_params = [p for p in raw_model.parameters() if p.requires_grad]
@@ -372,7 +448,10 @@ def train(
     use_amp = device_type == "cuda" 
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
-    # Compile the model for faster forward passes
+    # Compile the model for faster forward passes.
+    # Must happen BEFORE restoring RNG states: compilation may internally advance the
+    # CUDA RNG, so restoring afterwards ensures the first resumed batch sees exactly
+    # the same RNG state it would have seen in an uninterrupted run.
     try:
         model = torch.compile(raw_model, backend="auto", mode="default")
         print(f"Model compiled successfully on {device_type}")
@@ -381,9 +460,43 @@ def train(
         model = raw_model
     #model = raw_model
 
+    # -------------------------
+    # Resume from checkpoint if provided
+    # -------------------------
+    start_epoch = 0
+    start_batch_index = 0
+    if resume_state is not None:
+        start_epoch = resume_state.get("epoch", 0)
+        start_batch_index = resume_state.get("batch_index", 0)
+
+        _state = resume_state.get("_state", {})
+
+        optimizer.load_state_dict(_state["optimizer_state_dict"])
+        if use_amp and "scaler_state_dict" in _state:
+            scaler.load_state_dict(_state["scaler_state_dict"])
+
+        if scheduler is not None and resume_state.get("scheduler_step_count") is not None:
+            scheduler.step_count = resume_state["scheduler_step_count"]
+        if kl_scheduler is not None and resume_state.get("kl_scheduler_step_count") is not None:
+            kl_scheduler.step_count = resume_state["kl_scheduler_step_count"]
+        if resume_state.get("temp_scheduler_step_count") is not None:
+            layer_adapter_temp_scheduler.step_count = resume_state["temp_scheduler_step_count"]
+
+        rng_state = _state.get("rng_state", {})
+        if "torch" in rng_state:
+            torch.set_rng_state(rng_state["torch"])
+        if "numpy" in rng_state:
+            np.random.set_state(rng_state["numpy"])
+        if "python" in rng_state:
+            random.setstate(rng_state["python"])
+        if "cuda" in rng_state and torch.cuda.is_available():
+            torch.cuda.set_rng_state_all(rng_state["cuda"])
+
+        print(f"Resuming from epoch {start_epoch}, batch {start_batch_index}, global step {resume_state.get('step', 0)}")
+
     # Early stopping setup
-    best_val_loss = float('inf')
-    patience_counter = 0
+    best_val_loss = resume_state["best_val_loss"] if resume_state is not None else float('inf')
+    patience_counter = resume_state["patience_counter"] if resume_state is not None else 0
     if early_stopping_patience > 0:
         if val_dataloader is not None:
             print(f"Early stopping enabled (validation-based): patience={early_stopping_patience}, min_delta={early_stopping_min_delta}")
@@ -392,11 +505,13 @@ def train(
     else:
         print("Early stopping disabled")
 
-    step = 0
-    for epoch in range(num_epochs):
+    step = resume_state["step"] if resume_state is not None else 0
+    _resume_total_loss = resume_state.get("epoch_total_loss", 0.0) if resume_state is not None else 0.0
+    _resume_num_batches = resume_state.get("epoch_num_batches", 0) if resume_state is not None else 0
+    for epoch in range(start_epoch, num_epochs):
         model.train()
-        total_loss = 0.0
-        num_batches = 0
+        total_loss = _resume_total_loss if epoch == start_epoch else 0.0
+        num_batches = _resume_num_batches if epoch == start_epoch else 0
         acc_loss = []
         acc_kl_loss = []
         acc_shift_loss = []
@@ -404,8 +519,13 @@ def train(
         current_temperature = None
 
         # Use progress bar without total if length is unknown
-        progress_bar = tqdm(total=dataloader_len, desc="Processing")
+        _pbar_initial = start_batch_index if epoch == start_epoch else 0
+        progress_bar = tqdm(total=dataloader_len, initial=_pbar_initial, desc="Processing")
         for i, (batch, _) in enumerate(train_dataloader):
+            # Skip batches already processed when resuming mid-epoch
+            if epoch == start_epoch and i < start_batch_index:
+                continue
+
             batch = {k:v.to(device) for k,v in batch.items()}
 
             optimizer.zero_grad(set_to_none=True)
@@ -607,6 +727,45 @@ def train(
 
                 print(f"save parameters - progress {progress}")
                 save_model(raw_model, adapter_type, adapter_config, model_path+'-trace')
+                save_training_status(
+                    status_path=model_path + '.training_status.json',
+                    state_path=model_path + '-trace.state.pt',
+                    checkpoint_path=model_path + '-trace',
+                    best_checkpoint_path=model_path + '-best',
+                    epoch=epoch,
+                    step=step,
+                    batch_index=i + 1,
+                    best_val_loss=best_val_loss,
+                    patience_counter=patience_counter,
+                    optimizer=optimizer,
+                    scaler=scaler,
+                    scheduler=scheduler,
+                    kl_scheduler=kl_scheduler,
+                    temp_scheduler=layer_adapter_temp_scheduler,
+                    epoch_total_loss=total_loss,
+                    epoch_num_batches=num_batches,
+                )
+
+        # End-of-epoch status: batch_index=0 so resume starts the next epoch cleanly;
+        # epoch_total_loss/num_batches reset to 0 since the next epoch starts fresh.
+        save_training_status(
+            status_path=model_path + '.training_status.json',
+            state_path=model_path + '-trace.state.pt',
+            checkpoint_path=model_path + '-trace',
+            best_checkpoint_path=model_path + '-best',
+            epoch=epoch + 1,
+            step=step,
+            batch_index=0,
+            best_val_loss=best_val_loss,
+            patience_counter=patience_counter,
+            optimizer=optimizer,
+            scaler=scaler,
+            scheduler=scheduler,
+            kl_scheduler=kl_scheduler,
+            temp_scheduler=layer_adapter_temp_scheduler,
+            epoch_total_loss=0.0,
+            epoch_num_batches=0,
+        )
 
         progress_bar.close()
 
@@ -633,6 +792,8 @@ def main():
     parser.add_argument("--experiment_name", type=str, default=None, help="Name of the experiment for logging purposes (overrides training config)")
     parser.add_argument("--history_path", type=str, default=None, help="Path to save training history as JSONL (overrides training config)")
     parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility (overrides training config)")
+    parser.add_argument("--continue-training", type=str, default=None, dest="continue_training",
+                        help="Path to a .training_status.json file to resume an interrupted training run")
 
     args = parser.parse_args()
 
@@ -828,6 +989,26 @@ def main():
     # -------------------------
     # Model setup
     # -------------------------
+
+    resume_state = None
+    if args.continue_training:
+        print(f"Resuming training from status file: {args.continue_training}")
+        resume_state = load_training_status(args.continue_training)
+
+        resume_epoch = resume_state.get("epoch", 0)
+        resume_batch = resume_state.get("batch_index", 0)
+        if resume_epoch >= num_epochs:
+            print(
+                f"Training already complete: status shows epoch {resume_epoch} "
+                f"and num_epochs={num_epochs}. Nothing to do."
+            )
+            return
+
+        chkpt = resume_state["checkpoint_path"]
+        print(
+            f"Resuming from epoch {resume_epoch}, batch {resume_batch}, "
+            f"step {resume_state.get('step', 0)}"
+        )
 
     if chkpt:
         print(f"Loading model from {chkpt}")
@@ -1032,7 +1213,8 @@ def main():
         layer_adapter_max_temperature=attention_temperature,
         layer_adapter_min_temperature=min_attention_temperature,
         aggregation_strategy=aggregation_strategy,
-        history_path=history_path
+        history_path=history_path,
+        resume_state=resume_state
     )
 
     save_model(model, adapter_type, adapter_config, model_path)
