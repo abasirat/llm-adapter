@@ -68,7 +68,8 @@ def load_model(
         model, tokenizer, _ = load_adapter_model(model_name_or_path)
         _set_pad_token(tokenizer)
 
-    model.to(device)
+    if not any(hasattr(m, "_hf_hook") for m in model.modules()):
+        model.to(device)
     model.eval()
     return model, tokenizer
 
