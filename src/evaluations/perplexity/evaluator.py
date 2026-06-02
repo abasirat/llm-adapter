@@ -167,7 +167,7 @@ def _load_texts(
 ) -> List[str]:
     """Stream up to *max_samples* non-empty texts from a HuggingFace dataset."""
     try:
-        ds = load_dataset(**load_kwargs, streaming=True, trust_remote_code=False)
+        ds = load_dataset(**load_kwargs, streaming=True, trust_remote_code=True)
         texts: List[str] = []
         for ex in ds:
             if len(texts) >= max_samples:
