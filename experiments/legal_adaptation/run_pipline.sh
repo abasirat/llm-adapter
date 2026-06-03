@@ -13,12 +13,13 @@ MODELS=(
 
 ADAPTERS=(
   #"configs/adapters/layer_adapter_attention.yaml"
-    "configs/adapters/lora_default.yaml"
+  # "configs/adapters/lora_default.yaml"
+  "configs/adapters/none.yaml"
 )
 
 data_prepare=false
-train=true
-evaluate=false
+train=false
+evaluate=true
 
 # data preparation
 if [ "$data_prepare" = true ]; then
@@ -58,6 +59,11 @@ run_experiment() {
   local TRAIN_HISTORY_PATH="${RUN_DIR}/train/history.jsonl"
   local EVAL_OUTPUT="${RUN_DIR}/eval/results.json"
   local TRAIN_STATUS_PATH="${RUN_DIR}/train/checkpoint.training_status.json"
+
+  # If using the "none" adapter, we want to start from the base model
+  if [ "$ADAPTER_NAME" == "none" ]; then 
+    CHECKPOINT_PATH="${MODEL_NAME}"
+  fi
 
   mkdir -p "${RUN_DIR}/train"
   mkdir -p "${RUN_DIR}/eval"

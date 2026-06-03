@@ -404,6 +404,10 @@ def train(
     raw_model = model.to(device)
     trainable_params = [p for p in raw_model.parameters() if p.requires_grad]
 
+    if not trainable_params:
+        print("No trainable parameters found – skipping training loop.")
+        return
+
     optimizer = AdamW(
         trainable_params,
         lr=learning_rate,
