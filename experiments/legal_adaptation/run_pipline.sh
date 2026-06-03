@@ -12,12 +12,13 @@ MODELS=(
 )
 
 ADAPTERS=(
-  "configs/adapters/layer_adapter_attention.yaml"
+  #"configs/adapters/layer_adapter_attention.yaml"
+    "configs/adapters/lora_default.yaml"
 )
 
 data_prepare=false
 train=true
-evaluate=true
+evaluate=false
 
 # data preparation
 if [ "$data_prepare" = true ]; then
@@ -38,7 +39,7 @@ BINARY_TOKENIZED_TRAIN_PATH="${EXPERIMENT_ROOT}/prepared_data/train/data.bin"
 BINARY_TOKENIZED_VAL_PATH="${EXPERIMENT_ROOT}/prepared_data/val/data.bin" 
 
 SEEDS=(1)
-MAX_PARALLEL=4  # adjust to how many jobs fit in your VRAM
+MAX_PARALLEL=1  # adjust to how many jobs fit in your VRAM
 
 run_experiment() {
   local MODEL_CONFIG="$1"
@@ -82,8 +83,8 @@ run_experiment() {
         --train_bin_path "${BINARY_TOKENIZED_TRAIN_PATH}" \
         --history_path "${TRAIN_HISTORY_PATH}" \
         --experiment_name "${RUN_NAME}" \
-        --seed "${SEED}" \
-        --continue-training "${TRAIN_STATUS_PATH}"
+        --seed "${SEED}" 
+        #--continue-training "${TRAIN_STATUS_PATH}"
   else
     echo "Skipping training for ${RUN_NAME}..."
   fi
