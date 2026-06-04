@@ -249,12 +249,16 @@ def evaluate(
 
     # Flatten to scalar metrics for the summary table.
     flat: Dict[str, Any] = {}
-    for name, stats in raw.items():
+    for spec in datasets:
+        alias = spec["name"]
+        subset = spec.get("subset")
+        prefix = f"{alias}[{subset}]" if subset else alias
+        stats = raw.get(alias, {})
         if "error" in stats:
-            flat[f"{name}_avg_perplexity"] = None
+            flat[f"{prefix}_avg_perplexity"] = None
         else:
-            flat[f"{name}_avg_perplexity"] = stats.get("avg_perplexity")
-            flat[f"{name}_num_samples"] = stats.get("num_samples")
+            flat[f"{prefix}_avg_perplexity"] = stats.get("avg_perplexity")
+            flat[f"{prefix}_num_samples"] = stats.get("num_samples")
 
     flat["_raw"] = raw
     return flat

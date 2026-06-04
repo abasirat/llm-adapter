@@ -28,30 +28,11 @@ def _load(path: str) -> dict:
 def _flatten_summary(data: dict) -> Dict[str, Optional[float]]:
     """Return {evaluator.metric: value} from a JSON output file."""
     flat: Dict[str, Optional[float]] = {}
-
-    # Build alias→subset lookup from embedded config (perplexity only)
-    ppl_subset: Dict[str, str] = {}
-    for ds_spec in (
-        data.get("config", {})
-            .get("evaluations", {})
-            .get("perplexity", {})
-            .get("datasets", []) or []
-    ):
-        alias = ds_spec.get("name", "")
-        subset = ds_spec.get("subset")
-        if alias and subset:
-            ppl_subset[alias] = subset
-
     for evaluator, block in data.get("results", {}).items():
         if block.get("status") == "failed":
             flat[f"{evaluator}.__error__"] = None
             continue
         for metric, value in block.get("summary", {}).items():
-            if evaluator == "perplexity" and ppl_subset:
-                for alias, subset in ppl_subset.items():
-                    if metric.startswith(alias + "_"):
-                        metric = f"{alias}[{subset}]{metric[len(alias):]}"
-                        break
             flat[f"{evaluator}.{metric}"] = value
     return flat
 
