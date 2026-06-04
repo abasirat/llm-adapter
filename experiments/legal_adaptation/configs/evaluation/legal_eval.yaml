@@ -37,16 +37,34 @@ evaluations:
     split: test
     prompt_style: legal_reasoning
     normalize_log_probs: true
+    post_training:
+      enabled: false
+      training_config: configs/evaluation/post_training/task_ft.yaml
+      data_config: configs/evaluation/post_training/data/casehold.yaml
+      output_dir: outputs/post_trained/casehold
+      force_retrain: false
 
 
   ledgar:
     enabled: false
     split: test
     max_label_length: 32
+    post_training:
+      enabled: false
+      training_config: configs/evaluation/post_training/task_ft.yaml
+      data_config: configs/evaluation/post_training/data/ledgar.yaml
+      output_dir: outputs/post_trained/ledgar
+      force_retrain: false
 
   unfair_tos:
     enabled: false
     split: test
+    post_training:
+      enabled: false
+      training_config: configs/evaluation/post_training/task_ft.yaml
+      data_config: configs/evaluation/post_training/data/unfair_tos.yaml
+      output_dir: outputs/post_trained/unfair_tos
+      force_retrain: false
 
 
   style:

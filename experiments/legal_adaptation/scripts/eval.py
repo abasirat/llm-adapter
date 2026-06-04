@@ -96,6 +96,55 @@ def normalise_style_keys(eval_cfg: Dict[str, Any]) -> Dict[str, Any]:
     return eval_cfg
 
 
+def post_train_for_eval(
+    model_name_or_path: str,
+    device: str,
+    post_training_cfg: Dict[str, Any],
+) -> str:
+    """Fine-tune adapter parameters for a task and return the checkpoint path.
+
+    Checks for an existing checkpoint first (respects ``force_retrain``).
+    Lazily imports ``post_train_task`` so the heavy training dependencies are
+    only loaded when post-training is actually requested.
+    """
+    output_dir = post_training_cfg.get("output_dir")
+    if not output_dir:
+        raise ValueError("post_training.output_dir must be specified.")
+
+    best_checkpoint = os.path.join(output_dir, "checkpoint-best")
+    force_retrain   = post_training_cfg.get("force_retrain", False)
+
+    if not force_retrain and os.path.exists(best_checkpoint):
+        print(f"\n[post_training] Reusing existing checkpoint: {best_checkpoint}")
+        return best_checkpoint
+
+    training_config_path = post_training_cfg.get("training_config")
+    data_config_path     = post_training_cfg.get("data_config")
+
+    if not training_config_path:
+        raise ValueError("post_training.training_config must be specified.")
+    if not data_config_path:
+        raise ValueError("post_training.data_config must be specified.")
+
+    training_cfg = load_yaml(training_config_path)
+    data_cfg     = load_yaml(data_config_path)
+
+    # Make post_train_task importable (lives in the same scripts/ directory).
+    _scripts_dir = str(Path(__file__).parent)
+    if _scripts_dir not in sys.path:
+        sys.path.insert(0, _scripts_dir)
+
+    from post_train_task import run_post_training  # noqa: PLC0415
+
+    return run_post_training(
+        model_path=model_name_or_path,
+        training_cfg=training_cfg,
+        data_cfg=data_cfg,
+        output_dir=output_dir,
+        device=device,
+    )
+
+
 def build_evaluator_kwargs(
     eval_name: str,
     eval_cfg: Dict[str, Any],
@@ -105,6 +154,7 @@ def build_evaluator_kwargs(
     kwargs = copy.deepcopy(eval_cfg)
     kwargs.pop("enabled", None)
     kwargs.pop("import_path", None)
+    kwargs.pop("post_training", None)  # consumed by eval.py; not forwarded to evaluators
 
     # Global max_examples is inherited unless the evaluation has its own value.
     if "max_examples" not in kwargs and global_cfg.get("max_examples") is not None:
@@ -425,10 +475,21 @@ def main() -> None:
         import_path = this_eval_cfg.get("import_path", default_import_path)
         kwargs = build_evaluator_kwargs(name, this_eval_cfg, cfg)
 
+        # Optional task-specific post-training before evaluation.
+        eval_model_path = model_name_or_path
+        post_cfg = (this_eval_cfg.get("post_training") or {})
+        if post_cfg.get("enabled", False):
+            print(f"\n[post_training] Starting post-training for evaluation: {name}")
+            eval_model_path = post_train_for_eval(
+                model_name_or_path=model_name_or_path,
+                device=device,
+                post_training_cfg=post_cfg,
+            )
+
         all_metrics[name] = run_evaluator(
             name=name,
             import_path=import_path,
-            model_name_or_path=model_name_or_path,
+            model_name_or_path=eval_model_path,
             device=device,
             kwargs=kwargs,
         )

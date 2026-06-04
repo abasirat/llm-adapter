@@ -181,6 +181,220 @@ def tokenize_iterator(
     }
 
 
+# ---------------------------------------------------------------------------
+# Task-specific text formatters
+# ---------------------------------------------------------------------------
+
+def _apply_task_formatter(dataset, task: str):
+    """Return a text_getter callable for a named evaluation task.
+
+    The returned function accepts a single dataset example and returns the
+    formatted string that will be tokenised and packed into the binary file.
+    """
+    if task == "casehold":
+        def fmt(ex):
+            ctx = ex["context"].strip()
+            if ctx.endswith("<HOLDING>"):
+                ctx = ctx[: -len("<HOLDING>")].rstrip() + "\nHolding:"
+            else:
+                ctx += "\nHolding:"
+            return f"{ctx} {ex['endings'][int(ex['label'])]}"
+        return fmt
+
+    if task == "ledgar":
+        label_names = dataset.features["label"].names
+        def fmt(ex, _ln=label_names):
+            label_text = _ln[ex["label"]].replace("_", " ").replace("-", " ")
+            return f"Contract provision: {ex['text'].strip()[:1500]}\nCategory: {label_text}"
+        return fmt
+
+    if task == "unfair_tos":
+        return lambda ex: f"Terms of service clause: {ex['text'].strip()[:1200]}"
+
+    raise ValueError(
+        f"Unknown task formatter: {task!r}. Supported tasks: casehold, ledgar, unfair_tos"
+    )
+
+
+def _build_text_getter(cfg: dict, dataset):
+    """Return the text_getter function based on task / text_template / text_column."""
+    task = cfg.get("task")
+    if task:
+        return _apply_task_formatter(dataset, task)
+    text_template = cfg.get("text_template")
+    if text_template:
+        return lambda x, _t=text_template: _t.format(**x)
+    col = cfg.get("text_column", "text")
+    return lambda x: x[col]
+
+
+# ---------------------------------------------------------------------------
+# Core dataset preparation (importable)
+# ---------------------------------------------------------------------------
+
+def run_prepare_dataset(cfg: dict) -> None:
+    """Tokenise and binarise a dataset according to *cfg*.
+
+    Reads ``cfg`` keys identical to the CLI / YAML config format.
+    This function is importable so that other scripts (e.g. post_train_task.py)
+    can call it directly without spawning a subprocess.
+    """
+    if not cfg.get("max_bin_size_gb"):
+        raise ValueError("max_bin_size_gb must be set and greater than 0.")
+    if cfg["max_bin_size_gb"] <= 0:
+        raise ValueError("max_bin_size_gb must be greater than 0.")
+
+    logger.info("Loading tokenizer: %s", cfg["tokenizer_name"])
+    tokenizer = AutoTokenizer.from_pretrained(cfg["tokenizer_name"])
+
+    if tokenizer.eos_token is None:
+        tokenizer.add_special_tokens({"eos_token": "<|endoftext|>"})
+        logger.warning("Tokenizer had no EOS token; added '<|endoftext|>'.")
+
+    tokenizer_size = len(tokenizer)
+    dtype = dtype_for_vocab_size(tokenizer_size)
+    dtype_bytes = np.dtype(dtype).itemsize
+
+    max_bin_size_bytes = int(cfg["max_bin_size_gb"] * (1024**3))
+    max_tokens = max_bin_size_bytes // dtype_bytes
+
+    if max_tokens <= 0:
+        raise ValueError("max_bin_size_gb is too small for selected dtype.")
+
+    split = cfg.get("split", "train")
+    output_prefix = cfg["output_prefix"]
+
+    bin_path = str(Path(output_prefix) / "data.bin")
+    meta_path = str(Path(output_prefix) / "data.json")
+
+    Path(output_prefix).mkdir(parents=True, exist_ok=True)
+
+    logger.info("Output binary: %s", bin_path)
+    logger.info("Output metadata: %s", meta_path)
+    logger.info("Storage dtype: %s", dtype.__name__)
+    logger.info("Maximum tokens: %s", f"{max_tokens:,}")
+
+    preprocessing = cfg.get("preprocessing", {})
+
+    if cfg.get("dataset_name"):
+        from datasets import load_dataset
+        import datasets as _datasets_mod
+
+        logger.info(
+            "Loading HF dataset: %s | config=%s | split=%s",
+            cfg["dataset_name"],
+            cfg.get("dataset_config"),
+            split,
+        )
+
+        load_kwargs = {
+            "split": split,
+            "streaming": cfg.get("streaming", False),
+            "trust_remote_code": True,
+        }
+
+        if cfg.get("dataset_config"):
+            dataset = load_dataset(
+                cfg["dataset_name"],
+                cfg["dataset_config"],
+                **load_kwargs,
+            )
+        else:
+            dataset = load_dataset(cfg["dataset_name"], **load_kwargs)
+
+        if cfg.get("max_samples") is not None:
+            max_samples = cfg["max_samples"]
+            if cfg.get("streaming", False):
+                dataset = dataset.take(max_samples)
+            else:
+                dataset = dataset.select(range(min(max_samples, len(dataset))))
+
+        text_getter = _build_text_getter(cfg, dataset)
+
+        stats = tokenize_iterator(
+            iterator=dataset,
+            tokenizer=tokenizer,
+            output_path=bin_path,
+            dtype=dtype,
+            text_getter=text_getter,
+            chunk_size=cfg.get("chunk_size", 4096),
+            max_tokens=max_tokens,
+            preprocessing=preprocessing,
+        )
+
+        datasets_version = _datasets_mod.__version__
+
+    else:
+        input_file = cfg["input_file"]
+
+        if not os.path.exists(input_file):
+            sys.exit(f"Input file not found: {input_file}")
+
+        with open(input_file, "r", encoding="utf-8") as f:
+            stats = tokenize_iterator(
+                iterator=f,
+                tokenizer=tokenizer,
+                output_path=bin_path,
+                dtype=dtype,
+                text_getter=lambda line: line.rstrip("\n"),
+                chunk_size=cfg.get("chunk_size", 4096),
+                max_tokens=max_tokens,
+                preprocessing=preprocessing,
+            )
+
+        datasets_version = None
+
+    file_size_mb = os.path.getsize(bin_path) / (1024**2)
+
+    metadata = {
+        "source": {
+            "dataset_name": cfg.get("dataset_name"),
+            "dataset_config": cfg.get("dataset_config"),
+            "input_file": cfg.get("input_file"),
+            "split": split,
+            "task": cfg.get("task"),
+            "text_column": cfg.get("text_column"),
+            "text_template": cfg.get("text_template"),
+            "streaming": cfg.get("streaming", False),
+            "max_samples": cfg.get("max_samples"),
+        },
+        "tokenizer": {
+            "tokenizer_name": cfg["tokenizer_name"],
+            "eos_token": tokenizer.eos_token,
+            "eos_token_id": tokenizer.eos_token_id,
+            "vocab_size": tokenizer.vocab_size,
+            "tokenizer_length": len(tokenizer),
+        },
+        "preprocessing": preprocessing,
+        "storage": {
+            "bin_path": bin_path,
+            "metadata_path": meta_path,
+            "dtype": dtype.__name__,
+            "file_size_mb": round(file_size_mb, 2),
+            "max_bin_size_gb": cfg["max_bin_size_gb"],
+            "max_bin_size_bytes": max_bin_size_bytes,
+        },
+        "stats": stats,
+        "environment": {
+            "python": sys.version,
+            "numpy": np.__version__,
+            "transformers": transformers.__version__,
+            "datasets": datasets_version,
+        },
+        "command": " ".join(sys.argv),
+        "format": "Flat binary array of token IDs loadable with numpy.memmap.",
+        "load_hint": f"np.memmap('{bin_path}', dtype='{dtype.__name__}', mode='r')",
+    }
+
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2)
+
+    logger.info("Completed dataset preparation.")
+    logger.info("Tokens written: %s", f"{stats['total_tokens']:,}")
+    logger.info("Documents written: %s", f"{stats['documents_written']:,}")
+    logger.info("Binary size: %.2f MB", file_size_mb)
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
 
@@ -230,159 +444,7 @@ def main():
     args = parse_args()
     cfg = load_yaml(args.config)
     cfg = merge_config_and_args(args, cfg)
-
-    if cfg["max_bin_size_gb"] <= 0:
-        raise ValueError("max_bin_size_gb must be greater than 0.")
-
-    logger.info("Loading tokenizer: %s", cfg["tokenizer_name"])
-    tokenizer = AutoTokenizer.from_pretrained(cfg["tokenizer_name"])
-
-    if tokenizer.eos_token is None:
-        tokenizer.add_special_tokens({"eos_token": "<|endoftext|>"})
-        logger.warning("Tokenizer had no EOS token; added '<|endoftext|>'.")
-
-    tokenizer_size = len(tokenizer)
-    dtype = dtype_for_vocab_size(tokenizer_size)
-    dtype_bytes = np.dtype(dtype).itemsize
-
-    
-    max_bin_size_bytes = int(cfg["max_bin_size_gb"] * (1024**3))
-    max_tokens = max_bin_size_bytes // dtype_bytes
-
-    if max_tokens <= 0:
-        raise ValueError("max_bin_size_gb is too small for selected dtype.")
-
-    split = cfg.get("split", "train")
-    output_prefix = cfg["output_prefix"]
-
-    bin_path = str(Path.joinpath(Path(output_prefix), "data.bin"))
-    meta_path = str(Path.joinpath(Path(output_prefix), "data.json"))
-
-    Path(output_prefix).mkdir(parents=True, exist_ok=True)
-
-    logger.info("Output binary: %s", bin_path)
-    logger.info("Output metadata: %s", meta_path)
-    logger.info("Storage dtype: %s", dtype.__name__)
-    logger.info("Maximum tokens: %s", f"{max_tokens:,}")
-
-    preprocessing = cfg.get("preprocessing", {})
-
-    if cfg.get("dataset_name"):
-        from datasets import load_dataset
-        import datasets
-
-        logger.info(
-            "Loading HF dataset: %s | config=%s | split=%s",
-            cfg["dataset_name"],
-            cfg.get("dataset_config"),
-            split,
-        )
-
-        load_kwargs = {
-            "split": split,
-            "streaming": cfg.get("streaming", False),
-            "trust_remote_code": True,
-        }
-
-        if cfg.get("dataset_config"):
-            dataset = load_dataset(
-                cfg["dataset_name"],
-                cfg["dataset_config"],
-                **load_kwargs,
-            )
-        else:
-            dataset = load_dataset(
-                cfg["dataset_name"],
-                **load_kwargs,
-            )
-
-        if cfg.get("max_samples") is not None:
-            max_samples = cfg["max_samples"]
-            if cfg.get("streaming", False):
-                dataset = dataset.take(max_samples)
-            else:
-                dataset = dataset.select(range(min(max_samples, len(dataset))))
-
-        stats = tokenize_iterator(
-            iterator=dataset,
-            tokenizer=tokenizer,
-            output_path=bin_path,
-            dtype=dtype,
-            text_getter=lambda x: x[cfg.get("text_column", "text")],
-            chunk_size=cfg.get("chunk_size", 4096),
-            max_tokens=max_tokens,
-            preprocessing=preprocessing,
-        )
-
-        datasets_version = datasets.__version__
-
-    else:
-        input_file = cfg["input_file"]
-
-        if not os.path.exists(input_file):
-            sys.exit(f"Input file not found: {input_file}")
-
-        with open(input_file, "r", encoding="utf-8") as f:
-            stats = tokenize_iterator(
-                iterator=f,
-                tokenizer=tokenizer,
-                output_path=bin_path,
-                dtype=dtype,
-                text_getter=lambda line: line.rstrip("\n"),
-                chunk_size=cfg.get("chunk_size", 4096),
-                max_tokens=max_tokens,
-                preprocessing=preprocessing,
-            )
-
-        datasets_version = None
-
-    file_size_mb = os.path.getsize(bin_path) / (1024**2)
-
-    metadata = {
-        "source": {
-            "dataset_name": cfg.get("dataset_name"),
-            "dataset_config": cfg.get("dataset_config"),
-            "input_file": cfg.get("input_file"),
-            "split": split,
-            "text_column": cfg.get("text_column"),
-            "streaming": cfg.get("streaming", False),
-            "max_samples": cfg.get("max_samples"),
-        },
-        "tokenizer": {
-            "tokenizer_name": cfg["tokenizer_name"],
-            "eos_token": tokenizer.eos_token,
-            "eos_token_id": tokenizer.eos_token_id,
-            "vocab_size": tokenizer.vocab_size,
-            "tokenizer_length": len(tokenizer),
-        },
-        "preprocessing": preprocessing,
-        "storage": {
-            "bin_path": bin_path,
-            "metadata_path": meta_path,
-            "dtype": dtype.__name__,
-            "file_size_mb": round(file_size_mb, 2),
-            "max_bin_size_gb": cfg["max_bin_size_gb"],
-            "max_bin_size_bytes": max_bin_size_bytes,
-        },
-        "stats": stats,
-        "environment": {
-            "python": sys.version,
-            "numpy": np.__version__,
-            "transformers": transformers.__version__,
-            "datasets": datasets_version,
-        },
-        "command": " ".join(sys.argv),
-        "format": "Flat binary array of token IDs loadable with numpy.memmap.",
-        "load_hint": f"np.memmap('{bin_path}', dtype='{dtype.__name__}', mode='r')",
-    }
-
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(metadata, f, indent=2)
-
-    logger.info("Completed dataset preparation.")
-    logger.info("Tokens written: %s", f"{stats['total_tokens']:,}")
-    logger.info("Documents written: %s", f"{stats['documents_written']:,}")
-    logger.info("Binary size: %.2f MB", file_size_mb)
+    run_prepare_dataset(cfg)
 
 
 if __name__ == "__main__":

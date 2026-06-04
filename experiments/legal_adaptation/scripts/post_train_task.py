@@ -1,0 +1,279 @@
+"""
+post_train_task.py – Task-specific post-training of adapter parameters.
+
+Binarises a task's HuggingFace training split (via prepare_dataset) then
+fine-tunes the adapter on it using the existing train() loop.
+
+Can be used as a standalone script or imported from eval.py:
+
+    from post_train_task import run_post_training
+    checkpoint = run_post_training(
+        model_path="outputs/models/my_adapter.pt",
+        training_cfg=training_cfg_dict,
+        data_cfg=data_cfg_dict,
+        output_dir="outputs/post_trained/casehold",
+        device="auto",
+    )
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from functools import partial
+from pathlib import Path
+from typing import Optional
+
+import torch
+import yaml
+from torch.utils.data import DataLoader, random_split
+
+# ---------------------------------------------------------------------------
+# Make train.py importable when this module is loaded from eval.py, which may
+# be run from a different working directory.
+# ---------------------------------------------------------------------------
+_SCRIPTS_DIR = Path(__file__).parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+from train import (          # noqa: E402 – must follow sys.path adjustment
+    MixedDataset,
+    TokenBinDataset,
+    set_seed,
+    token_bin_collate,
+    train,
+)
+
+import wandb                 # noqa: E402
+from llm_adapter import load_model as _llm_load_model  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def run_post_training(
+    model_path: str,
+    training_cfg: dict,
+    data_cfg: dict,
+    output_dir: str,
+    device: str = "auto",
+) -> str:
+    """Fine-tune adapter parameters on a task training split.
+
+    Parameters
+    ----------
+    model_path   : path to the domain-adapted adapter checkpoint (.pt file)
+    training_cfg : dict with training hyperparameters (mirrors task_ft.yaml)
+    data_cfg     : dict with dataset configuration (mirrors data/casehold.yaml)
+    output_dir   : directory where post-trained checkpoints are written
+    device       : device string – "auto", "cuda", "mps", or "cpu"
+
+    Returns
+    -------
+    str  Absolute path to the best checkpoint produced by training
+         (``<output_dir>/checkpoint-best``).  Falls back to the trace
+         checkpoint if no validation-driven improvement was recorded.
+    """
+    from evaluations.utils import select_device  # lazy import – avoids circular deps
+
+    # Ensure prepare_dataset is importable.
+    if str(_SCRIPTS_DIR) not in sys.path:
+        sys.path.insert(0, str(_SCRIPTS_DIR))
+    from prepare_dataset import run_prepare_dataset  # noqa: E402
+
+    device = torch.device(select_device(device))
+    seed = training_cfg.get("seed", 42)
+    set_seed(seed)
+
+    # ------------------------------------------------------------------
+    # 1. Binarise task training data (idempotent – skipped when .bin exists)
+    # ------------------------------------------------------------------
+    bin_path = os.path.join(data_cfg["output_prefix"], "data.bin")
+    if not os.path.exists(bin_path):
+        print(f"\n[post_training] Tokenising task data → {bin_path}")
+        run_prepare_dataset(data_cfg)
+    else:
+        print(f"\n[post_training] Reusing tokenised data: {bin_path}")
+
+    # ------------------------------------------------------------------
+    # 2. Load domain-adapted model (adapter_type is stored in the .pt file)
+    # ------------------------------------------------------------------
+    print(f"[post_training] Loading adapter model from {model_path}")
+    model, _tokenizer, adapter_config = _llm_load_model(model_path)
+
+    saved_meta = torch.load(model_path, map_location="cpu", weights_only=False)
+    adapter_type = saved_meta["adapter_type"]
+
+    # Extract layer_adapter-specific settings from the stored adapter_config dict.
+    def _get(key, default):
+        if isinstance(adapter_config, dict):
+            return adapter_config.get(key, default)
+        return default
+
+    variational_modeling      = _get("variational_modeling", False)
+    aggregation_strategy      = _get("aggregation_strategy", "attention")
+    shift_regularization      = _get("shift_regularization", False)
+    layer_adapter_max_temp    = _get("attention_temperature", 2.0)
+    layer_adapter_min_temp    = _get("min_attention_temperature", 0.8)
+
+    # ------------------------------------------------------------------
+    # 3. Build dataloaders from the binarised data
+    # ------------------------------------------------------------------
+    context_size = training_cfg.get("context_size", 512)
+    batch_size   = training_cfg.get("batch_size", 8)
+    val_fraction = training_cfg.get("val_fraction", 0.1)
+    num_workers  = training_cfg.get("num_workers", 0)
+    pin_memory   = device.type == "cuda"
+
+    full_dataset = TokenBinDataset(bin_path, context_size=context_size)
+
+    if len(full_dataset) == 0:
+        raise RuntimeError(
+            f"TokenBinDataset at {bin_path} produced 0 chunks with "
+            f"context_size={context_size}. The bin file may be too small."
+        )
+
+    train_dataset = full_dataset
+    val_dataset: Optional[torch.utils.data.Dataset] = None
+
+    if val_fraction > 0.0 and len(full_dataset) > 1:
+        total     = len(full_dataset)
+        val_size  = max(1, int(total * val_fraction))
+        train_size = total - val_size
+
+        if train_size >= 1:
+            train_dataset, val_dataset = random_split(
+                full_dataset,
+                [train_size, val_size],
+                generator=torch.Generator().manual_seed(seed),
+            )
+            print(
+                f"[post_training] Dataset split – train: {train_size} chunks, "
+                f"val: {val_size} chunks."
+            )
+
+    collate_fn = partial(token_bin_collate, context_size=context_size)
+
+    train_dataloader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        collate_fn=collate_fn,
+        num_workers=num_workers,
+        shuffle=True,
+        pin_memory=pin_memory,
+    )
+
+    val_dataloader = None
+    if val_dataset is not None:
+        val_dataloader = DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            collate_fn=collate_fn,
+            num_workers=num_workers,
+            shuffle=False,
+            pin_memory=pin_memory,
+        )
+
+    # ------------------------------------------------------------------
+    # 4. Run the training loop (reuses train() from train.py unchanged)
+    # ------------------------------------------------------------------
+    os.makedirs(output_dir, exist_ok=True)
+    model_save_path = os.path.join(output_dir, "checkpoint")
+
+    # Disable wandb for post-training runs; train() calls wandb.log() throughout.
+    wandb.init(mode="disabled")
+    try:
+        train(
+            model=model,
+            train_dataloader=train_dataloader,
+            device=device,
+            model_path=model_save_path,
+            learning_rate=training_cfg.get("learning_rate", 1e-4),
+            adapter_type=adapter_type,
+            adapter_config=adapter_config,
+            variational_modeling=variational_modeling,
+            num_epochs=training_cfg.get("num_epochs", 3),
+            adam_beta1=training_cfg.get("adam_beta1", 0.9),
+            adam_beta2=training_cfg.get("adam_beta2", 0.999),
+            weight_decay=training_cfg.get("weight_decay", 0.01),
+            early_stopping_patience=training_cfg.get("early_stopping_patience", 3),
+            early_stopping_min_delta=training_cfg.get("early_stopping_min_delta", 1e-4),
+            val_dataloader=val_dataloader,
+            progress_interval=training_cfg.get("progress_interval", 10),
+            val_interval=training_cfg.get("val_interval", 50),
+            kl_loss_weight=training_cfg.get("kl_loss_weight", 0.0),
+            kl_warmup_fraction=training_cfg.get("kl_warmup_fraction", 0.0),
+            kl_schedule=training_cfg.get("kl_schedule", "linear"),
+            shift_regularization=shift_regularization,
+            layer_adapter_max_temperature=layer_adapter_max_temp,
+            layer_adapter_min_temperature=layer_adapter_min_temp,
+            aggregation_strategy=aggregation_strategy,
+        )
+    finally:
+        wandb.finish()
+
+    # train() saves the best val checkpoint to model_save_path + "-best"
+    best_path  = model_save_path + "-best"
+    trace_path = model_save_path + "-trace"
+
+    if os.path.exists(best_path):
+        print(f"[post_training] Best checkpoint: {best_path}")
+        return best_path
+
+    if os.path.exists(trace_path):
+        print(
+            f"[post_training] No val-improvement checkpoint found; "
+            f"using trace checkpoint: {trace_path}"
+        )
+        return trace_path
+
+    raise FileNotFoundError(
+        f"Post-training did not produce any checkpoint under {output_dir!r}. "
+        "Check that training ran for at least one validation interval."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Standalone entry point
+# ---------------------------------------------------------------------------
+
+def _load_yaml(path: str) -> dict:
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Post-train adapter parameters on a task's training split.",
+    )
+    parser.add_argument("--model_path",      required=True, help="Domain-adapted adapter checkpoint (.pt).")
+    parser.add_argument("--training_config", required=True, help="Path to post-training YAML config (task_ft.yaml).")
+    parser.add_argument("--data_config",     required=True, help="Path to task data YAML config (e.g. data/casehold.yaml).")
+    parser.add_argument("--output_dir",      required=True, help="Directory for post-trained checkpoints.")
+    parser.add_argument("--device",          default="auto", help="Device: auto, cuda, mps, cpu.")
+    parser.add_argument("--force_retrain",   action="store_true",
+                        help="Re-train even if a checkpoint already exists in output_dir.")
+    args = parser.parse_args()
+
+    best_path = os.path.join(args.output_dir, "checkpoint-best")
+    if not args.force_retrain and os.path.exists(best_path):
+        print(f"Checkpoint already exists at {best_path}. Use --force_retrain to override.")
+        return
+
+    training_cfg = _load_yaml(args.training_config)
+    data_cfg     = _load_yaml(args.data_config)
+
+    run_post_training(
+        model_path=args.model_path,
+        training_cfg=training_cfg,
+        data_cfg=data_cfg,
+        output_dir=args.output_dir,
+        device=args.device,
+    )
+
+
+if __name__ == "__main__":
+    main()
