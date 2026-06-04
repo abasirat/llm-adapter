@@ -229,13 +229,15 @@ def evaluate(
     for spec in datasets:
         resolved = _resolve_dataset_spec(spec)
         alias = resolved["alias"]
-        label = f"{alias}/{spec['split']}"
+        subset = spec.get("subset")
+        prefix = f"{alias}[{subset}]" if subset else alias
+        label = f"{prefix}/{spec['split']}"
 
         print(f"\n[perplexity] Loading {label} ...")
         texts = _load_texts(resolved["load_kwargs"], resolved["text_field"], n_samples)
 
         if not texts:
-            raw[alias] = {"error": f"no samples available for '{label}'"}
+            raw[prefix] = {"error": f"no samples available for '{label}'"}
             continue
 
         stats = _avg_perplexity(
@@ -245,7 +247,7 @@ def evaluate(
             desc=f"Perplexity ({label})",
         )
         stats["dataset"] = label
-        raw[alias] = stats
+        raw[prefix] = stats
 
     # Flatten to scalar metrics for the summary table.
     flat: Dict[str, Any] = {}
@@ -253,7 +255,7 @@ def evaluate(
         alias = spec["name"]
         subset = spec.get("subset")
         prefix = f"{alias}[{subset}]" if subset else alias
-        stats = raw.get(alias, {})
+        stats = raw.get(prefix, {})
         if "error" in stats:
             flat[f"{prefix}_avg_perplexity"] = None
         else:
