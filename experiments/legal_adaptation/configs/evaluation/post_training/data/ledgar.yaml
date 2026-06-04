@@ -1,0 +1,17 @@
+# Task data config for LEDGAR post-training.
+#
+# Each training example is formatted as:
+#   "Contract provision: <text>\nCategory: <label_name>"
+#
+# This matches the prompt format used by the LEDGAR evaluator so that the
+# adapter learns to predict the correct label given the provision text.
+
+dataset_name: lex_glue
+dataset_config: ledgar
+split: train
+task: ledgar              # triggers _apply_task_formatter in prepare_dataset.py
+
+tokenizer_name: gpt2
+output_prefix: outputs/post_training_data/ledgar
+max_bin_size_gb: 1.0
+streaming: false
