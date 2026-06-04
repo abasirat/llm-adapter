@@ -695,7 +695,7 @@ def train(
                 acc_loss = []
                 acc_kl_loss = []
                 acc_shift_loss = []
-            if (i + 1) % val_interval == 0: 
+            if (i + 1) % val_interval == 0 or (i + 1) >= dataloader_len: 
                 # Early stopping check (training-based, only if no validation set)
                 if val_dataloader is not None and early_stopping_patience > 0:
                     avg_val_loss, _ = validate(raw_model, val_dataloader, device, device_type, use_amp, progress_interval) # Note: the loss does not include the KL divergence component, since that is not computed during validation.  This means that when using variational modeling, the absolute value of the validation loss may not be directly comparable to the training loss, but it can still be used for early stopping based on relative improvements.
@@ -752,6 +752,8 @@ def train(
 
         # End-of-epoch status: batch_index=0 so resume starts the next epoch cleanly;
         # epoch_total_loss/num_batches reset to 0 since the next epoch starts fresh.
+        print(f"End of epoch {epoch + 1}, saving model and training status...")
+        save_model(raw_model, adapter_type, adapter_config, model_path+'-trace')
         save_training_status(
             status_path=model_path + '.training_status.json',
             state_path=model_path + '-trace.state.pt',
