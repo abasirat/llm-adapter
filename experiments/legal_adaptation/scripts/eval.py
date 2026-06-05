@@ -303,7 +303,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--config", type=str, default=None, help="Path to YAML evaluation config.")
     parser.add_argument("--model_name_or_path", type=str, default=None, help="HF model name or local checkpoint path.")
-    parser.add_argument("--output_file", type=str, default=None, help="Path to save full JSON results.")
+    parser.add_argument("--output_dir", type=str, default=None, help="Path to save the results (model, binarised data, and json outputs).")
     parser.add_argument("--device", type=str, default=None, help="Device: auto, cuda, mps, or cpu.")
     parser.add_argument("--max_examples", type=int, default=None, help="Global example cap inherited by enabled evaluations.")
     parser.add_argument("--batch_size", type=int, default=None, help="Optional global batch size stored in config metadata.")
@@ -363,11 +363,11 @@ def apply_cli_overrides(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[s
     top_level_overrides = compact_none(
         {
             "model_name_or_path": args.model_name_or_path,
-            "output_file": args.output_file,
             "device": args.device,
             "max_examples": args.max_examples,
             "batch_size": args.batch_size,
             "seed": args.seed,
+            "output_dir": args.output_dir,
         }
     )
     deep_update(cfg, top_level_overrides)
@@ -455,11 +455,12 @@ def main() -> None:
     from evaluations.utils import safe_save_json, select_device
 
     model_name_or_path = cfg["model_name_or_path"]
-    output_file = cfg.get("output_file")
+    output_file = os.path.join(args.output_dir, "results.json")
     device = select_device(cfg.get("device", "auto"))
 
     print(f"Device: {device}")
     print(f"Model:  {model_name_or_path}")
+    print(f"Output file: {output_file}\n")
 
     all_metrics: Dict[str, Dict[str, Any]] = {}
     eval_cfgs = cfg.get("evaluations", {}) or {}

@@ -1,9 +1,7 @@
 """
 Prepare a causal-LM dataset as a flat binary token-ID file.
 
-Output:
-  <output_prefix>_<split>.bin
-  <output_prefix>_<split>.json
+The dataset is tokenised and packed into a single binary file containing a flat array of token IDs.
 """
 
 import argparse
@@ -263,12 +261,12 @@ def run_prepare_dataset(cfg: dict) -> None:
         raise ValueError("max_bin_size_gb is too small for selected dtype.")
 
     split = cfg.get("split", "train")
-    output_prefix = cfg["output_prefix"]
+    output_dir = cfg["output_dir"]
 
-    bin_path = str(Path(output_prefix) / "data.bin")
-    meta_path = str(Path(output_prefix) / "data.json")
+    bin_path = str(Path(output_dir) / "data.bin")
+    meta_path = str(Path(output_dir) / "data.json")
 
-    Path(output_prefix).mkdir(parents=True, exist_ok=True)
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     logger.info("Output binary: %s", bin_path)
     logger.info("Output metadata: %s", meta_path)
@@ -412,7 +410,7 @@ def parse_args():
     parser.add_argument("--max_samples", type=int, default=None)
 
     parser.add_argument("--tokenizer_name", type=str, default=None)
-    parser.add_argument("--output_prefix", type=str, required=False)
+    parser.add_argument("--output_dir", type=str, required=False)
 
     parser.add_argument("--chunk_size", type=int, default=None)
     parser.add_argument("--max_bin_size_gb", type=float, default=None)
@@ -434,8 +432,8 @@ def merge_config_and_args(args, cfg):
     if not data.get("dataset_name") and not data.get("input_file"):
         raise ValueError("Provide either dataset_name or input_file.")
 
-    if not data.get("output_prefix"):
-        raise ValueError("output_prefix is required.")
+    if not data.get("output_dir"):
+        raise ValueError("output_dir is required.")
 
     return data
 
