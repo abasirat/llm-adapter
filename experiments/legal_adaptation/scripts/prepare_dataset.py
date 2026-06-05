@@ -195,8 +195,8 @@ def _apply_task_formatter(dataset, task: str, tokenizer):
     """
     if task == "casehold":
         def fmt(ex):
-            ctx = _casehold_build_prompt(cex["context"].strip())
-            return f"{ctx} {ex['endings'][int(ex['label'])]}"
+            choice = ex["endings"][int(ex["label"])]
+            return _casehold_build_prompt(ex["context"], choice)
         return fmt
 
     if task == "ledgar":
