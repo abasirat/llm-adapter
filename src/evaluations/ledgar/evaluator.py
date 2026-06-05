@@ -57,10 +57,22 @@ def _get_label_names(dataset) -> List[str]:
 # Prompt template
 # ---------------------------------------------------------------------------
 
-def _build_prompt(text: str) -> str:
-    # Truncate very long provisions to keep prompt within model context.
-    text = text.strip()[:1500]
-    return f"Contract provision: {text}\nCategory:"
+def build_prompt(text, tokenizer, max_prompt_tokens=900):
+
+    ids = tokenizer.encode(
+        text,
+        add_special_tokens=False,
+    )
+
+    ids = ids[:max_prompt_tokens]
+
+    text = tokenizer.decode(ids)
+
+    return (
+        f"Contract provision:\n"
+        f"{text}\n\n"
+        f"Category:"
+    )
 
 
 # ---------------------------------------------------------------------------
