@@ -40,69 +40,53 @@ from evaluations.utils import load_model
 # Scoring helpers
 # ---------------------------------------------------------------------------
 
+def _build_prompt(context: str, choice: str) -> str:
+    """Build the prompt for a CaseHOLD example, given the context and a candidate holding."""
+    prefix, suffix = context.split("<HOLDING>")
+    prompt = prefix + " " + choice # ignore suffix for scoring
+    return prompt
+
 def _choice_avg_logprob(
     model,
     tokenizer,
-    prompt_ids: torch.Tensor,
+    context: str,
     choice: str,
     device: str,
+    max_length: int = 1024,
 ) -> float:
-    """
-    Compute mean per-token log P(choice | prompt).
+    prompt = _build_prompt(context, choice)
 
-    prompt_ids : (1, prompt_len) already on *device*.
-    choice     : raw string for the holding (a space is prepended to separate
-                 it cleanly from the prompt).
-    Returns    : scalar float (higher = more likely).
-    """
-    choice_ids = tokenizer(
-        " " + choice.strip(),
+    old_side = tokenizer.truncation_side
+    tokenizer.truncation_side = "left"
+
+    ids = tokenizer(
+        prompt,
         return_tensors="pt",
         add_special_tokens=False,
+        truncation=True,
+        max_length=max_length,
     ).input_ids.to(device)
 
-    if choice_ids.shape[1] == 0:
-        return float("-inf")
+    tokenizer.truncation_side = old_side
 
-    full_ids = torch.cat([prompt_ids, choice_ids], dim=1)  # (1, L)
+    choice_token_count = len(tokenizer(choice, add_special_tokens=False).input_ids)
+
+    if ids.shape[1] < 2:
+        return float("-inf")
 
     with torch.no_grad():
-        logits = model(full_ids).logits                     # (1, L, V)
+        logits = model(ids).logits
 
-    # Shift: logit[t] predicts token[t+1].
-    shift_logits = logits[:, :-1, :]                        # (1, L-1, V)
-    shift_labels = full_ids[:, 1:]                          # (1, L-1)
+    shift_logits = logits[:, :-1, :]
+    shift_labels = ids[:, 1:]
 
     log_probs = F.log_softmax(shift_logits, dim=-1)
-    token_lp = log_probs.gather(-1, shift_labels.unsqueeze(-1)).squeeze(-1)  # (1, L-1)
+    token_lp = log_probs.gather(
+        -1,
+        shift_labels.unsqueeze(-1),
+    ).squeeze(-1)
 
-    # Only average over the choice tokens (prompt_len .. L-1 after shift).
-    prompt_len = prompt_ids.shape[1]
-    choice_lp = token_lp[:, prompt_len - 1:]               # (1, n_choice_tokens)
-
-    if choice_lp.numel() == 0:
-        return float("-inf")
-
-    return choice_lp.mean().item()
-
-
-def _build_prompt(context: str) -> str:
-    """
-    Construct the CaseHOLD prompt for causal-LM evaluation.
-
-    CaseHOLD contexts contain a <HOLDING> placeholder marking the position
-    where the candidate holding should appear. We remove the placeholder and
-    treat each candidate holding as a direct continuation of the context,
-    yielding likelihoods of the form:
-
-        P(holding | context)
-
-    This formulation avoids introducing task-specific instruction text and
-    remains faithful to standard causal language modeling.
-    """
-    return context.replace("<HOLDING>", "").rstrip()
-
-
+    return token_lp[:, -choice_token_count:].mean().item()
 
 # ---------------------------------------------------------------------------
 # Evaluation loop
@@ -129,17 +113,17 @@ def _run_evaluation(
         choices: List[str] = ex["endings"]   # always 5 candidates
         gold: int = int(ex["label"])
 
-        prompt = _build_prompt(context)
+        #prompt = _build_prompt(context)
 
-        old_side = tokenizer.truncation_side
-        tokenizer.truncation_side = "left" # truncate from the left if needed to fit max_length. We want to keep the end of the prompt since the holding is there.
-        prompt_ids = tokenizer(
-            prompt, return_tensors="pt", truncation=True, max_length=900
-        ).input_ids.to(device)
-        tokenizer.truncation_side = old_side
+        #old_side = tokenizer.truncation_side
+        #tokenizer.truncation_side = "left" # truncate from the left if needed to fit max_length. We want to keep the end of the prompt since the holding is there.
+        #prompt_ids = tokenizer(
+        #    prompt, return_tensors="pt", truncation=True, max_length=900
+        #).input_ids.to(device)
+        #tokenizer.truncation_side = old_side
 
         scores = [
-            _choice_avg_logprob(model, tokenizer, prompt_ids, c, device)
+            _choice_avg_logprob(model, tokenizer, context, c, device)
             for c in choices
         ]
 
