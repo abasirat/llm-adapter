@@ -57,22 +57,11 @@ def _get_label_names(dataset) -> List[str]:
 # Prompt template
 # ---------------------------------------------------------------------------
 
-def build_prompt(text, tokenizer, max_prompt_tokens=900):
-
-    ids = tokenizer.encode(
-        text,
-        add_special_tokens=False,
-    )
-
+def _build_prompt(text, tokenizer, max_prompt_tokens):
+    ids = tokenizer.encode(text, add_special_tokens=False)
     ids = ids[:max_prompt_tokens]
-
     text = tokenizer.decode(ids)
-
-    return (
-        f"Contract provision:\n"
-        f"{text}\n\n"
-        f"Category:"
-    )
+    return f"Contract provision:\n{text}\n\nCategory:"
 
 
 # ---------------------------------------------------------------------------
