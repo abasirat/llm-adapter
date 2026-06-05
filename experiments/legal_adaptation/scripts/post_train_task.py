@@ -97,13 +97,25 @@ def run_post_training(
         print(f"\n[post_training] Reusing tokenised data: {bin_path}")
 
     # ------------------------------------------------------------------
-    # 2. Load domain-adapted model (adapter_type is stored in the .pt file)
+    # 2. Load model — handle both .pt adapter checkpoints and plain HF model IDs
     # ------------------------------------------------------------------
-    print(f"[post_training] Loading adapter model from {model_path}")
-    model, _tokenizer, adapter_config = _llm_load_model(model_path)
+    print(f"[post_training] Loading model from {model_path}")
+    _is_pt_file = os.path.isfile(model_path)
 
-    saved_meta = torch.load(model_path, map_location="cpu", weights_only=False)
-    adapter_type = saved_meta["adapter_type"]
+    if _is_pt_file:
+        model, _tokenizer, adapter_config = _llm_load_model(model_path)
+        saved_meta = torch.load(model_path, map_location="cpu", weights_only=False)
+        adapter_type = saved_meta["adapter_type"]
+    else:
+        # model_path is a HuggingFace model ID (e.g. "gpt2") — no adapter file
+        adapter_type   = "none"
+        adapter_config = None
+        model, _tokenizer = _llm_setup_model(
+            model_name=model_path,
+            adapter_type="none",
+            adapter_config=None,
+            num_tailor_layers=0,
+        )
 
     # Extract layer_adapter-specific settings from the stored adapter_config dict.
     def _get(key, default):

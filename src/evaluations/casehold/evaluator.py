@@ -88,17 +88,19 @@ def _choice_avg_logprob(
 
 def _build_prompt(context: str) -> str:
     """
-    Wrap the citation context in a clear instruction prefix.
+    Construct the CaseHOLD prompt for causal-LM evaluation.
 
-    CaseHOLD context strings already end with <HOLDING>.  We replace that
-    marker with a colon to form the prompt.
+    CaseHOLD contexts contain a <HOLDING> placeholder marking the position
+    where the candidate holding should appear. We remove the placeholder and
+    treat each candidate holding as a direct continuation of the context,
+    yielding likelihoods of the form:
+
+        P(holding | context)
+
+    This formulation avoids introducing task-specific instruction text and
+    remains faithful to standard causal language modeling.
     """
-    context = context.strip()
-    if context.endswith("<HOLDING>"):
-        context = context[: -len("<HOLDING>")].rstrip() + "\nHolding:"
-    else:
-        context = context + "\nHolding:"
-    return context
+    return context.replace("<HOLDING>", "").rstrip()
 
 
 
