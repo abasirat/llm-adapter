@@ -138,6 +138,21 @@ def run_post_training(
     num_workers  = training_cfg.get("num_workers", 0)
     pin_memory   = device.type == "cuda"
 
+    # Print a summary of the training configuration for easy reference in logs:
+    print("\n[post_training] Training configuration:")
+    print(f"  model_path: {model_path}")
+    print(f"  output_dir: {output_dir}")
+    print(f"  device: {device}")
+    print(f"  adapter_type: {adapter_type}")
+    print(f"  variational_modeling: {variational_modeling}")
+    print(f"  aggregation_strategy: {aggregation_strategy}")
+    print(f"  shift_regularization: {shift_regularization}")
+    print(f"  layer_adapter_max_temperature: {layer_adapter_max_temp}")
+    print(f"  layer_adapter_min_temperature: {layer_adapter_min_temp}")
+    print(f"  context_size: {context_size}")
+    print(f"  batch_size: {batch_size}")
+    print(f"  val_fraction: {val_fraction}")
+
     full_dataset = TokenBinDataset(bin_path, context_size=context_size)
 
     if len(full_dataset) == 0:
