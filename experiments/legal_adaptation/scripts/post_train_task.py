@@ -91,7 +91,7 @@ def run_post_training(
     # ------------------------------------------------------------------
 
     bin_path = os.path.join(output_dir, "data.bin")
-    if not os.path.exists(bin_path) or data_cfg.get("force_prepare", False):
+    if not os.path.exists(bin_path) or data_cfg.get("force_prepare", True):
         print(f"\n[post_training] Tokenising task data → {bin_path}")
         data_cfg["output_dir"] = output_dir  # prepare_dataset expects an output_dir key
         run_prepare_dataset(data_cfg)
