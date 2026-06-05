@@ -10,7 +10,7 @@ seed: 42
 evaluations:
 
   perplexity:
-    enabled: true
+    enabled: false
 
     datasets:
       - name: pile_of_law
@@ -33,12 +33,10 @@ evaluations:
 
 
   casehold:
-    enabled: false
+    enabled: true
     split: test
-    prompt_style: legal_reasoning
-    normalize_log_probs: true
     post_training:
-      enabled: false
+      enabled: true
       training_config: configs/evaluation/post_training/task_ft.yaml
       data_config: configs/evaluation/post_training/data/casehold.yaml
       output_dir: outputs/post_trained/casehold
@@ -48,7 +46,6 @@ evaluations:
   ledgar:
     enabled: false
     split: test
-    max_label_length: 32
     post_training:
       enabled: false
       training_config: configs/evaluation/post_training/task_ft.yaml
