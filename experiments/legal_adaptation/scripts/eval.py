@@ -479,6 +479,7 @@ def main() -> None:
         # Optional task-specific post-training before evaluation.
         eval_model_path = model_name_or_path
         post_cfg = (this_eval_cfg.get("post_training") or {})
+        post_cfg["output_dir"] = post_cfg.get("output_dir") or os.path.join(args.output_dir, f"post_training_{name}")
         if post_cfg.get("enabled", False):
             print(f"\n[post_training] Starting post-training for evaluation: {name}")
             eval_model_path = post_train_for_eval(
