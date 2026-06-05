@@ -12,7 +12,7 @@ MODELS=(
 )
 
 ADAPTERS=(
-  #"configs/adapters/layer_adapter_attention.yaml"
+  #"configs/attention/attention_q32_v512_h4_pre_var0_sh0.yaml"
   # "configs/adapters/lora_default.yaml"
   "configs/adapters/none.yaml"
 )
@@ -24,16 +24,16 @@ evaluate=true
 # data preparation
 if [ "$data_prepare" = true ]; then
     echo "Preparing training dataset..."
-    echo "Output prefix: ${EXPERIMENT_ROOT}/prepared_data/train/"
+    echo "Output dir: ${EXPERIMENT_ROOT}/prepared_data/train/"
     python scripts/prepare_dataset.py \
         --config $TRAIN_DATA_CONFIG \
-        --output_prefix ${EXPERIMENT_ROOT}/prepared_data/train/
+        --output_dir ${EXPERIMENT_ROOT}/prepared_data/train/
     
     echo "Preparing validation dataset..."
-    echo "Output prefix: ${EXPERIMENT_ROOT}/prepared_data/val"
+    echo "Output dir: ${EXPERIMENT_ROOT}/prepared_data/val"
     python scripts/prepare_dataset.py \
         --config $VAL_DATA_CONFIG \
-        --output_prefix ${EXPERIMENT_ROOT}/prepared_data/val/
+        --output_dir ${EXPERIMENT_ROOT}/prepared_data/val/
 fi
 
 BINARY_TOKENIZED_TRAIN_PATH="${EXPERIMENT_ROOT}/prepared_data/train/data.bin" 
@@ -112,14 +112,14 @@ job_count=0
 for MODEL_CONFIG in "${MODELS[@]}"; do
   for ADAPTER_CONFIG in "${ADAPTERS[@]}"; do
     for SEED in "${SEEDS[@]}"; do
-        run_experiment "$MODEL_CONFIG" "$ADAPTER_CONFIG" "$SEED" &
-        (( ++job_count ))
-        if (( job_count >= MAX_PARALLEL )); then
-          wait -n 2>/dev/null || wait
-          (( --job_count ))
-        fi
+        run_experiment "$MODEL_CONFIG" "$ADAPTER_CONFIG" "$SEED" #&
+        #(( ++job_count ))
+        #if (( job_count >= MAX_PARALLEL )); then
+        #  wait -n 2>/dev/null || wait
+        #  (( --job_count ))
+        #fi
     done
   done
 done
 
-wait
+#wait
