@@ -89,8 +89,10 @@ def run_post_training(
     # ------------------------------------------------------------------
     # 1. Binarise task training data (idempotent – skipped when .bin exists)
     # ------------------------------------------------------------------
-    model_config_name = os.path.splitext(os.path.basename(model_path))[0]
-    bin_dir = os.path.join(data_cfg["output_prefix"], f"{model_config_name}")
+    if "output_prefix" in data_cfg:
+        bin_dir = data_cfg["output_prefix"]
+    else:
+        bin_dir = os.path.join(output_dir, "prepared_data")
     os.makedirs(bin_dir, exist_ok=True)
     bin_path = os.path.join(bin_dir, "data.bin")
     if not os.path.exists(bin_path) or data_cfg.get("force_prepare", False):

@@ -6,7 +6,6 @@ streaming: true
 max_samples: null
 
 tokenizer_name: gpt2
-output_prefix: outputs/prepared_datasets/legal_pile_train
 
 chunk_size: 4096
 max_bin_size_gb: 0.01
