@@ -19,6 +19,10 @@ from tqdm import tqdm
 from transformers import AutoTokenizer
 import transformers
 
+from evaluations.ledgar.evaluator import _build_prompt as _ledgar_build_prompt
+from evaluations.casehold.evaluator import _build_prompt as _casehold_build_prompt
+
+
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +189,7 @@ def tokenize_iterator(
 # Task-specific text formatters
 # ---------------------------------------------------------------------------
 
-def _apply_task_formatter(dataset, task: str):
+def _apply_task_formatter(dataset, task: str, tokenizer):
     """Return a text_getter callable for a named evaluation task.
 
     The returned function accepts a single dataset example and returns the
@@ -193,11 +197,7 @@ def _apply_task_formatter(dataset, task: str):
     """
     if task == "casehold":
         def fmt(ex):
-            ctx = ex["context"].strip()
-            if ctx.endswith("<HOLDING>"):
-                ctx = ctx[: -len("<HOLDING>")].rstrip() + "\nHolding:"
-            else:
-                ctx += "\nHolding:"
+            ctx = _casehold_build_prompt(cex["context"].strip())
             return f"{ctx} {ex['endings'][int(ex['label'])]}"
         return fmt
 
@@ -205,7 +205,8 @@ def _apply_task_formatter(dataset, task: str):
         label_names = dataset.features["label"].names
         def fmt(ex, _ln=label_names):
             label_text = _ln[ex["label"]].replace("_", " ").replace("-", " ")
-            return f"Contract provision: {ex['text'].strip()[:1500]}\nCategory: {label_text}"
+            prompt = _ledgar_build_prompt(ex["text"], tokenizer=tokenizer, max_prompt_tokens=900)
+            return f"{prompt} {label_text}"
         return fmt
 
     if task == "unfair_tos":
@@ -216,11 +217,11 @@ def _apply_task_formatter(dataset, task: str):
     )
 
 
-def _build_text_getter(cfg: dict, dataset):
+def _build_text_getter(cfg: dict, dataset, tokenizer):
     """Return the text_getter function based on task / text_template / text_column."""
     task = cfg.get("task")
     if task:
-        return _apply_task_formatter(dataset, task)
+        return _apply_task_formatter(dataset, task, tokenizer)
     text_template = cfg.get("text_template")
     if text_template:
         return lambda x, _t=text_template: _t.format(**x)
@@ -309,7 +310,7 @@ def run_prepare_dataset(cfg: dict) -> None:
             else:
                 dataset = dataset.select(range(min(max_samples, len(dataset))))
 
-        text_getter = _build_text_getter(cfg, dataset)
+        text_getter = _build_text_getter(cfg, dataset, tokenizer=tokenizer)
 
         stats = tokenize_iterator(
             iterator=dataset,
