@@ -42,9 +42,13 @@ from evaluations.utils import load_model
 
 def _build_prompt(context: str, choice: str) -> str:
     """Build the prompt for a CaseHOLD example, given the context and a candidate holding."""
-    prefix, suffix = context.split("<HOLDING>")
-    prompt = prefix + " " + choice # ignore suffix for scoring
-    return prompt
+    try:
+        prefix, suffix = context.split("<HOLDING>")
+        prompt = prefix + " " + choice # ignore suffix for scoring
+        return prompt
+    except ValueError:
+        # Handle the case where "<HOLDING>" is not found
+        return context + " " + choice
 
 def _choice_avg_logprob(
     model,
@@ -112,15 +116,6 @@ def _run_evaluation(
         context: str = ex["context"]
         choices: List[str] = ex["endings"]   # always 5 candidates
         gold: int = int(ex["label"])
-
-        #prompt = _build_prompt(context)
-
-        #old_side = tokenizer.truncation_side
-        #tokenizer.truncation_side = "left" # truncate from the left if needed to fit max_length. We want to keep the end of the prompt since the holding is there.
-        #prompt_ids = tokenizer(
-        #    prompt, return_tensors="pt", truncation=True, max_length=900
-        #).input_ids.to(device)
-        #tokenizer.truncation_side = old_side
 
         scores = [
             _choice_avg_logprob(model, tokenizer, context, c, device)
