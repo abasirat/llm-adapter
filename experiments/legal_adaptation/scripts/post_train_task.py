@@ -95,6 +95,7 @@ def run_post_training(
         bin_dir = os.path.join(output_dir, "prepared_data")
     os.makedirs(bin_dir, exist_ok=True)
     bin_path = os.path.join(bin_dir, "data.bin")
+    data_cfg["output_prefix"] = bin_dir  # ensure prepare_dataset writes to the right place
     if not os.path.exists(bin_path) or data_cfg.get("force_prepare", False):
         print(f"\n[post_training] Tokenising task data → {bin_path}")
         run_prepare_dataset(data_cfg)
