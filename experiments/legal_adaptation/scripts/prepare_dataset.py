@@ -202,9 +202,8 @@ def _apply_task_formatter(dataset, task: str, tokenizer):
     if task == "ledgar":
         label_names = dataset.features["label"].names
         def fmt(ex, _ln=label_names):
-            label_text = _ln[ex["label"]].replace("_", " ").replace("-", " ")
-            prompt = _ledgar_build_prompt(ex["text"], tokenizer=tokenizer, max_prompt_tokens=900)
-            return f"{prompt} {label_text}"
+            choice = _ln[ex["label"]].replace("_", " ").replace("-", " ")
+            return _ledgar_build_prompt(ex["text"], choice)
         return fmt
 
     if task == "unfair_tos":
