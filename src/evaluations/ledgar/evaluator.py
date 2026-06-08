@@ -52,135 +52,92 @@ def _get_label_names(dataset) -> List[str]:
     """Return the ordered list of class label strings from the dataset features."""
     return dataset.features["label"].names
 
+def _verbalize_label(choice: str) -> str:
+    return choice.replace("_", " ").replace("-", " ").strip()
+
 
 # ---------------------------------------------------------------------------
 # Prompt template
 # ---------------------------------------------------------------------------
 
 def _build_prompt(context: str, choice: str) -> str:
-    return f"{context}\n\nCategory: {choice}"
-
-def _choice_avg_logprob(
-    model,
-    tokenizer,
-    context: str,
-    choice: str,
-    device: str,
-    max_length: int = 1024,
-) -> float:
-    prompt = _build_prompt(context, choice)
-
-    old_side = tokenizer.truncation_side
-    tokenizer.truncation_side = "left"
-
-    ids = tokenizer(
-        prompt,
-        return_tensors="pt",
-        add_special_tokens=False,
-        truncation=True,
-        max_length=max_length,
-    ).input_ids.to(device)
-
-    tokenizer.truncation_side = old_side
-
-    choice_token_count = len(tokenizer(choice, add_special_tokens=False).input_ids)
-
-    if ids.shape[1] < 2:
-        return float("-inf")
-
-    with torch.no_grad():
-        logits = model(ids).logits
-
-    shift_logits = logits[:, :-1, :]
-    shift_labels = ids[:, 1:]
-
-    log_probs = F.log_softmax(shift_logits, dim=-1)
-    token_lp = log_probs.gather(
-        -1,
-        shift_labels.unsqueeze(-1),
-    ).squeeze(-1)
-
-    return token_lp[:, -choice_token_count:].mean().item()
+    label = _verbalize_label(choice)
+    return f"Contract provision:\n{context.strip()}\n\nCategory:{' ' + label}"
 
 # ---------------------------------------------------------------------------
 # Evaluation loop
 # ---------------------------------------------------------------------------
 
 @torch.no_grad()
-def _score_choices_batched(
+def _score_choices_cached(
     model,
     tokenizer,
     context: str,
     choices: List[str],
     device: str,
-    label_batch_size: int = 32,
     max_length: int = 768,
 ) -> List[float]:
 
+    prompt = f"Contract provision:\n{context.strip()}\n\nCategory:"
+
+    enc_prompt = tokenizer(
+        prompt,
+        return_tensors="pt",
+        truncation=True,
+        max_length=max_length,
+        add_special_tokens=False,
+    ).to(device)
+
+    prompt_outputs = model(
+        input_ids=enc_prompt["input_ids"],
+        attention_mask=enc_prompt["attention_mask"],
+        use_cache=True,
+    )
+
+    past = prompt_outputs.past_key_values
+    prompt_last_logit = prompt_outputs.logits[:, -1:, :]
+
     scores = []
 
-    for start in range(0, len(choices), label_batch_size):
-        batch_choices = choices[start:start + label_batch_size]
+    for choice in choices:
+        label_text = " " + _verbalize_label(choice)
 
-        prompts = [
-            _build_prompt(context, choice)
-            for choice in batch_choices
-        ]
-
-        old_side = tokenizer.truncation_side
-        tokenizer.truncation_side = "left"
-
-        enc = tokenizer(
-            prompts,
+        enc_label = tokenizer(
+            label_text,
             return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=max_length,
             add_special_tokens=False,
         ).to(device)
 
-        tokenizer.truncation_side = old_side
+        label_ids = enc_label["input_ids"]
 
-        input_ids = enc["input_ids"]
-        attention_mask = enc["attention_mask"]
+        if label_ids.shape[1] == 0:
+            scores.append(float("-inf"))
+            continue
 
-        outputs = model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-        )
+        if label_ids.shape[1] == 1:
+            all_logits = prompt_last_logit
+        else:
+            label_prefix_ids = label_ids[:, :-1]
 
-        logits = outputs.logits
+            label_outputs = model(
+                input_ids=label_prefix_ids,
+                past_key_values=past,
+                use_cache=False,
+            )
 
-        shift_logits = logits[:, :-1, :]
-        shift_labels = input_ids[:, 1:]
-        shift_mask = attention_mask[:, 1:]
+            all_logits = torch.cat(
+                [prompt_last_logit, label_outputs.logits],
+                dim=1,
+            )
 
-        log_probs = F.log_softmax(shift_logits, dim=-1)
+        log_probs = F.log_softmax(all_logits, dim=-1)
 
         token_lp = log_probs.gather(
             -1,
-            shift_labels.unsqueeze(-1),
+            label_ids.unsqueeze(-1),
         ).squeeze(-1)
 
-        for i, choice in enumerate(batch_choices):
-            choice_len = len(
-                tokenizer(
-                    choice,
-                    add_special_tokens=False,
-                ).input_ids
-            )
-
-            # Score the final choice tokens.
-            valid_len = int(shift_mask[i].sum().item())
-            start_pos = valid_len - choice_len
-            end_pos = valid_len
-
-            if start_pos < 0:
-                scores.append(float("-inf"))
-                continue
-
-            choice_lp = token_lp[i, start_pos:end_pos]
-            scores.append(choice_lp.mean().item())
+        scores.append(token_lp.mean().item())
 
     return scores
 
@@ -194,6 +151,7 @@ def _run_evaluation(
     max_length: int = 768,
 ) -> Dict[str, Any]:
     dataset = load_dataset("lex_glue", "ledgar", split=split)
+    
     label_names = _get_label_names(dataset)
 
     results = []
@@ -211,13 +169,12 @@ def _run_evaluation(
         choices: List[str] = label_names  # always 100 candidates
         gold: int = int(ex["label"])
 
-        scores = _score_choices_batched(
+        scores = _score_choices_cached(
             model=model,
             tokenizer=tokenizer,
             context=context,
             choices=choices,
             device=device,
-            label_batch_size=label_batch_size,
             max_length=max_length,
         )
 
@@ -239,7 +196,7 @@ def _run_evaluation(
                 "choices": choices,
                 "gold": gold,
                 "pred": pred,
-                "scores": [round(s, 6) for s in scores],
+                #"scores": [round(s, 6) for s in scores],
                 "correct": is_correct,
                 "margin": round(margin, 6),
             }
@@ -268,7 +225,7 @@ def evaluate(
     split: str = "test",
     max_examples: Optional[int] = None,
     label_batch_size: int = 32,
-    max_length: int = 768,
+    max_length: int = 1024,
     **kwargs,
 ) -> dict:
     model, tokenizer = load_model(model_name_or_path, device)
