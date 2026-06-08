@@ -252,7 +252,7 @@ def _run_evaluation(
         text: str = ex["text"]
         gold: int = int(ex["label"])
 
-        prompt = _build_prompt(text)
+        prompt = _build_prompt(text, tokenizer, max_prompt_tokens=900)
         #scores = _score_labels_with_cache(model, tokenizer, prompt, label_names, device)
         scores = _score_labels_batched(
             model=model,
