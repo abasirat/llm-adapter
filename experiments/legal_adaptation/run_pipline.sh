@@ -57,13 +57,14 @@ run_experiment() {
 
   local CHECKPOINT_PATH="${RUN_DIR}/train/checkpoint"
   local TRAIN_HISTORY_PATH="${RUN_DIR}/train/history.jsonl"
-  local EVAL_OUTPUT="${RUN_DIR}/eval/results.json"
+  local EVAL_OUTPUT="${RUN_DIR}/eval/"
   local TRAIN_STATUS_PATH="${RUN_DIR}/train/checkpoint.training_status.json"
 
   # If using the "none" adapter, we want to start from the base model
-  if [ "$ADAPTER_NAME" == "none" ]; then 
+  if [ "$ADAPTER_NAME" = "none" ]; then 
     CHECKPOINT_PATH="${MODEL_NAME}"
   fi
+
 
   mkdir -p "${RUN_DIR}/train"
   mkdir -p "${RUN_DIR}/eval"
@@ -91,6 +92,7 @@ run_experiment() {
         --experiment_name "${RUN_NAME}" \
         --seed "${SEED}" 
         #--continue-training "${TRAIN_STATUS_PATH}"
+
   else
     echo "Skipping training for ${RUN_NAME}..."
   fi
@@ -100,7 +102,7 @@ run_experiment() {
     python scripts/eval.py \
       --config "${EVAL_CONFIG}" \
       --model_name_or_path "${CHECKPOINT_PATH}" \
-      --output_file "${EVAL_OUTPUT}" \
+      --output_dir "${EVAL_OUTPUT}" \
       --seed "${SEED}"
   else
     echo "Skipping evaluation for ${RUN_NAME}..."

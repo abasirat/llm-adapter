@@ -106,6 +106,84 @@ def _choice_avg_logprob(
 # Evaluation loop
 # ---------------------------------------------------------------------------
 
+@torch.no_grad()
+def _score_choices_batched(
+    model,
+    tokenizer,
+    context: str,
+    choices: List[str],
+    device: str,
+    label_batch_size: int = 32,
+    max_length: int = 768,
+) -> List[float]:
+
+    scores = []
+
+    for start in range(0, len(choices), label_batch_size):
+        batch_choices = choices[start:start + label_batch_size]
+
+        prompts = [
+            _build_prompt(context, choice)
+            for choice in batch_choices
+        ]
+
+        old_side = tokenizer.truncation_side
+        tokenizer.truncation_side = "left"
+
+        enc = tokenizer(
+            prompts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+            add_special_tokens=False,
+        ).to(device)
+
+        tokenizer.truncation_side = old_side
+
+        input_ids = enc["input_ids"]
+        attention_mask = enc["attention_mask"]
+
+        outputs = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+        )
+
+        logits = outputs.logits
+
+        shift_logits = logits[:, :-1, :]
+        shift_labels = input_ids[:, 1:]
+        shift_mask = attention_mask[:, 1:]
+
+        log_probs = F.log_softmax(shift_logits, dim=-1)
+
+        token_lp = log_probs.gather(
+            -1,
+            shift_labels.unsqueeze(-1),
+        ).squeeze(-1)
+
+        for i, choice in enumerate(batch_choices):
+            choice_len = len(
+                tokenizer(
+                    choice,
+                    add_special_tokens=False,
+                ).input_ids
+            )
+
+            # Score the final choice tokens.
+            valid_len = int(shift_mask[i].sum().item())
+            start_pos = valid_len - choice_len
+            end_pos = valid_len
+
+            if start_pos < 0:
+                scores.append(float("-inf"))
+                continue
+
+            choice_lp = token_lp[i, start_pos:end_pos]
+            scores.append(choice_lp.mean().item())
+
+    return scores
+
 def _run_evaluation(
     model,
     tokenizer,
@@ -133,10 +211,15 @@ def _run_evaluation(
         choices: List[str] = label_names  # always 100 candidates
         gold: int = int(ex["label"])
 
-        scores = [
-            _choice_avg_logprob(model, tokenizer, context, c, device)
-            for c in choices
-        ]
+        scores = _score_choices_batched(
+            model=model,
+            tokenizer=tokenizer,
+            context=context,
+            choices=choices,
+            device=device,
+            label_batch_size=label_batch_size,
+            max_length=max_length,
+        )
 
         pred = int(torch.tensor(scores).argmax().item())
         is_correct = pred == gold
