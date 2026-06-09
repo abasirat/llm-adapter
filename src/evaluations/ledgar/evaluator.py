@@ -70,11 +70,13 @@ class LEDGARGenerationDataset(Dataset):
         split: str = "train",
         max_length: int = 1024,
         max_label_length: int = 16,
+        truncation_side: str = "left",
         max_examples: int | None = None,
     ):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.max_label_length = max_label_length
+        self.truncation_side = truncation_side
 
         self.dataset = load_dataset("lex_glue", "ledgar", split=split)
         if max_examples is not None:
@@ -102,12 +104,15 @@ class LEDGARGenerationDataset(Dataset):
 
         max_prompt_len = self.max_length - len(target_ids)
 
+        old_side = self.tokenizer.truncation_side
+        self.tokenizer.truncation_side = self.truncation_side
         prompt_ids = self.tokenizer(
             prompt,
             add_special_tokens=False,
             truncation=True,
             max_length=max_prompt_len,
         ).input_ids
+        self.tokenizer.truncation_side = old_side
 
         input_ids = prompt_ids + target_ids
         labels = [-100] * len(prompt_ids) + target_ids

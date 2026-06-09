@@ -84,7 +84,8 @@ def run_post_training(
         sys.path.insert(0, str(_SCRIPTS_DIR))
     from prepare_dataset import run_prepare_dataset  # noqa: E402
 
-    device = torch.device(select_device(device))
+    device_name = select_device(device)
+    device_obj = torch.device(device_name)
     seed = training_cfg.get("seed", 42)
     set_seed(seed)
 
@@ -120,11 +121,30 @@ def run_post_training(
         # model_path is a HuggingFace model ID (e.g. "gpt2") — no adapter file
         adapter_type   = "none"
         adapter_config = None
+
+        # For plain HF model IDs, ensure post-training has trainable parameters.
+        # Defaults here are task fine-tuning friendly and can be overridden
+        # from task_ft.yaml.
+        posttrain_num_tailor_layers = int(training_cfg.get("num_tailor_layers", 1))
+        posttrain_freeze_lm_head = bool(training_cfg.get("freeze_lm_head", False))
+
         model, _tokenizer = _llm_setup_model(
             model_name=model_path,
             adapter_type="none",
             adapter_config=None,
-            num_tailor_layers=0,
+            num_tailor_layers=posttrain_num_tailor_layers,
+            freeze_lm_head=posttrain_freeze_lm_head,
+        )
+
+    if model is None:
+        raise RuntimeError("Model setup failed: expected a model instance, got None.")
+
+    trainable_param_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    if trainable_param_count == 0:
+        raise RuntimeError(
+            "Post-training model has zero trainable parameters. "
+            "If using a HF model ID, set training_cfg.num_tailor_layers > 0 "
+            "or training_cfg.freeze_lm_head=false."
         )
 
     # Extract layer_adapter-specific settings from the stored adapter_config dict.
@@ -146,13 +166,13 @@ def run_post_training(
     batch_size   = training_cfg.get("batch_size", 8)
     val_fraction = training_cfg.get("val_fraction", 0.1)
     num_workers  = training_cfg.get("num_workers", 0)
-    pin_memory   = device.type == "cuda"
+    pin_memory   = device_obj.type == "cuda"
 
     # Print a summary of the training configuration for easy reference in logs:
     print("\n[post_training] Training configuration:")
     print(f"  model_path: {model_path}")
     print(f"  output_dir: {output_dir}")
-    print(f"  device: {device}")
+    print(f"  device: {device_obj}")
     print(f"  adapter_type: {adapter_type}")
     print(f"  variational_modeling: {variational_modeling}")
     print(f"  aggregation_strategy: {aggregation_strategy}")
@@ -192,6 +212,10 @@ def run_post_training(
     #    )
 
     else:
+        if bin_path is None:
+            raise RuntimeError(
+                f"Expected a token-bin path for task={task_name!r}, but got None."
+            )
         full_dataset = TokenBinDataset(bin_path, context_size=context_size)
         collate_fn = partial(token_bin_collate, context_size=context_size)
 
@@ -254,7 +278,7 @@ def run_post_training(
             train(
                 model=model,
                 train_dataloader=train_dataloader,
-                device=device,
+                device=device_obj,
                 model_path=model_save_path,
                 learning_rate=training_cfg.get("learning_rate", 1e-4),
                 adapter_type=adapter_type,

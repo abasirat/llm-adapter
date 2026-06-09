@@ -130,6 +130,12 @@ def post_train_for_eval(
     data_cfg     = load_yaml(data_config_path)
 
     training_cfg["force_retrain"] = force_retrain
+    data_cfg["force_prepare"] = bool(post_training_cfg.get("force_prepare", data_cfg.get("force_prepare", True)))
+
+    # Allow selected post_training values to override task/data defaults.
+    for key in ("split", "max_examples", "max_label_length", "truncation_side"):
+        if key in post_training_cfg and post_training_cfg[key] is not None:
+            data_cfg[key] = post_training_cfg[key]
 
     # Make post_train_task importable (lives in the same scripts/ directory).
     _scripts_dir = str(Path(__file__).parent)
