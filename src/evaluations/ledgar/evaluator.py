@@ -256,6 +256,63 @@ def _score_choices_cached(
 
     return scores
 
+@torch.no_grad()
+def _score_choices_simple(
+    model,
+    tokenizer,
+    context: str,
+    choices: List[str],
+    device: str,
+    max_length: int = 768,
+) -> List[float]:
+
+    scores = []
+
+    for choice in choices:
+        label_text = " " + _verbalize_label(choice)
+        prompt = f"Contract provision:\n{context.strip()}\n\nCategory:"
+        full_text = prompt + label_text
+
+        old_side = tokenizer.truncation_side
+        tokenizer.truncation_side = "left"
+
+        ids = tokenizer(
+            full_text,
+            return_tensors="pt",
+            add_special_tokens=False,
+            truncation=True,
+            max_length=max_length,
+        ).input_ids.to(device)
+
+        tokenizer.truncation_side = old_side
+
+        label_len = len(
+            tokenizer(
+                label_text,
+                add_special_tokens=False,
+            ).input_ids
+        )
+
+        if ids.shape[1] < 2 or label_len == 0:
+            scores.append(float("-inf"))
+            continue
+
+        outputs = model(ids)
+        logits = outputs.logits
+
+        shift_logits = logits[:, :-1, :]
+        shift_labels = ids[:, 1:]
+
+        log_probs = F.log_softmax(shift_logits, dim=-1)
+        token_lp = log_probs.gather(
+            -1,
+            shift_labels.unsqueeze(-1),
+        ).squeeze(-1)
+
+        scores.append(token_lp[:, -label_len:].mean().item())
+
+    return scores
+
 def _run_evaluation(
     model,
     tokenizer,
@@ -284,7 +341,15 @@ def _run_evaluation(
         choices: List[str] = label_names  # always 100 candidates
         gold: int = int(ex["label"])
 
-        scores = _score_choices_cached(
+        #scores = _score_choices_cached(
+        #    model=model,
+        #    tokenizer=tokenizer,
+        #    context=context,
+        #    choices=choices,
+        #    device=device,
+        #    max_length=max_length,
+        #)
+        scores = _score_choices_simple(
             model=model,
             tokenizer=tokenizer,
             context=context,
