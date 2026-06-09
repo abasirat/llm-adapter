@@ -127,46 +127,36 @@ def supervised_lm_collate(batch, pad_token_id: int):
     input_ids = []
     attention_mask = []
     labels = []
-    label_ids = []
 
     for x in batch:
         pad_len = max_len - len(x["input_ids"])
 
         input_ids.append(
-            torch.cat(
-                [
-                    x["input_ids"],
-                    torch.full((pad_len,), pad_token_id, dtype=torch.long),
-                ]
-            )
+            torch.cat([
+                x["input_ids"],
+                torch.full((pad_len,), pad_token_id, dtype=torch.long),
+            ])
         )
 
         attention_mask.append(
-            torch.cat(
-                [
-                    x["attention_mask"],
-                    torch.zeros(pad_len, dtype=torch.long),
-                ]
-            )
+            torch.cat([
+                x["attention_mask"],
+                torch.zeros(pad_len, dtype=torch.long),
+            ])
         )
 
         labels.append(
-            torch.cat(
-                [
-                    x["labels"],
-                    torch.full((pad_len,), -100, dtype=torch.long),
-                ]
-            )
+            torch.cat([
+                x["labels"],
+                torch.full((pad_len,), -100, dtype=torch.long),
+            ])
         )
-
-        label_ids.append(x["label_id"])
 
     return {
         "input_ids": torch.stack(input_ids),
         "attention_mask": torch.stack(attention_mask),
         "labels": torch.stack(labels),
-        "label_id": torch.stack(label_ids),
-    }
+    }, None
 
 
 # ---------------------------------------------------------------------------
