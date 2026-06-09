@@ -129,6 +129,8 @@ def post_train_for_eval(
     training_cfg = load_yaml(training_config_path)
     data_cfg     = load_yaml(data_config_path)
 
+    training_cfg["force_retrain"] = force_retrain
+
     # Make post_train_task importable (lives in the same scripts/ directory).
     _scripts_dir = str(Path(__file__).parent)
     if _scripts_dir not in sys.path:

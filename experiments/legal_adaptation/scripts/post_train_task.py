@@ -247,37 +247,41 @@ def run_post_training(
     os.makedirs(output_dir, exist_ok=True)
     model_save_path = os.path.join(output_dir, "checkpoint")
 
-    # Disable wandb for post-training runs; train() calls wandb.log() throughout.
-    wandb.init(mode="disabled")
-    try:
-        train(
-            model=model,
-            train_dataloader=train_dataloader,
-            device=device,
-            model_path=model_save_path,
-            learning_rate=training_cfg.get("learning_rate", 1e-4),
-            adapter_type=adapter_type,
-            adapter_config=adapter_config,
-            variational_modeling=variational_modeling,
-            num_epochs=training_cfg.get("num_epochs", 3),
-            adam_beta1=training_cfg.get("adam_beta1", 0.9),
-            adam_beta2=training_cfg.get("adam_beta2", 0.999),
-            weight_decay=training_cfg.get("weight_decay", 0.01),
-            early_stopping_patience=training_cfg.get("early_stopping_patience", 3),
-            early_stopping_min_delta=training_cfg.get("early_stopping_min_delta", 1e-4),
-            val_dataloader=val_dataloader,
-            progress_interval=training_cfg.get("progress_interval", 10),
-            val_interval=training_cfg.get("val_interval", 50),
-            kl_loss_weight=training_cfg.get("kl_loss_weight", 0.0),
-            kl_warmup_fraction=training_cfg.get("kl_warmup_fraction", 0.0),
-            kl_schedule=training_cfg.get("kl_schedule", "linear"),
-            shift_regularization=shift_regularization,
-            layer_adapter_max_temperature=layer_adapter_max_temp,
-            layer_adapter_min_temperature=layer_adapter_min_temp,
-            aggregation_strategy=aggregation_strategy,
-        )
-    finally:
-        wandb.finish()
+    if not os.path.exists(model_save_path) or training_cfg.get("force_retrain", False):
+        # Disable wandb for post-training runs; train() calls wandb.log() throughout.
+        wandb.init(mode="disabled")
+        try:
+            train(
+                model=model,
+                train_dataloader=train_dataloader,
+                device=device,
+                model_path=model_save_path,
+                learning_rate=training_cfg.get("learning_rate", 1e-4),
+                adapter_type=adapter_type,
+                adapter_config=adapter_config,
+                variational_modeling=variational_modeling,
+                num_epochs=training_cfg.get("num_epochs", 3),
+                adam_beta1=training_cfg.get("adam_beta1", 0.9),
+                adam_beta2=training_cfg.get("adam_beta2", 0.999),
+                weight_decay=training_cfg.get("weight_decay", 0.01),
+                early_stopping_patience=training_cfg.get("early_stopping_patience", 3),
+                early_stopping_min_delta=training_cfg.get("early_stopping_min_delta", 1e-4),
+                val_dataloader=val_dataloader,
+                progress_interval=training_cfg.get("progress_interval", 10),
+                val_interval=training_cfg.get("val_interval", 50),
+                kl_loss_weight=training_cfg.get("kl_loss_weight", 0.0),
+                kl_warmup_fraction=training_cfg.get("kl_warmup_fraction", 0.0),
+                kl_schedule=training_cfg.get("kl_schedule", "linear"),
+                shift_regularization=shift_regularization,
+                layer_adapter_max_temperature=layer_adapter_max_temp,
+                layer_adapter_min_temperature=layer_adapter_min_temp,
+                aggregation_strategy=aggregation_strategy,
+            )
+        finally:
+            wandb.finish()
+    else:
+        print(f"[post_training] Checkpoint already exists at {model_save_path}. "
+              "Use --force_retrain to override.")
 
     # train() saves the best val checkpoint to model_save_path + "-best"
     best_path  = model_save_path + "-best"
@@ -331,6 +335,8 @@ def main() -> None:
 
     training_cfg = _load_yaml(args.training_config)
     data_cfg     = _load_yaml(args.data_config)
+
+    training_cfg["force_prepare"] = args.force_retrain  # ensure data is re-prepared when forcing retrain
 
     run_post_training(
         model_path=args.model_path,
