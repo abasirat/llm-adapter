@@ -1044,6 +1044,7 @@ def main():
                 "query_source": agg_query_source,
                 "variational_modeling": variational_modeling,
                 "aggregation_strategy": aggregation_strategy,
+                "shift_regularization": shift_regularization,
             }
 
         elif adapter_type == "lora":
