@@ -313,6 +313,94 @@ def _score_choices_simple(
 
     return scores
 
+@torch.no_grad()
+def _score_choices_batched_simple(
+    model,
+    tokenizer,
+    context: str,
+    choices: List[str],
+    device: str,
+    max_length: int = 768,
+    label_batch_size: int = 16,
+) -> List[float]:
+
+    scores = []
+    prompt = f"Contract provision:\n{context.strip()}\n\nCategory:"
+
+    old_side = tokenizer.truncation_side
+    tokenizer.truncation_side = "left"
+
+    for start in range(0, len(choices), label_batch_size):
+        batch_choices = choices[start:start + label_batch_size]
+
+        label_texts = [
+            " " + _verbalize_label(choice)
+            for choice in batch_choices
+        ]
+
+        full_texts = [
+            prompt + label_text
+            for label_text in label_texts
+        ]
+
+        enc = tokenizer(
+            full_texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+            add_special_tokens=False,
+        ).to(device)
+
+        input_ids = enc["input_ids"]
+        attention_mask = enc["attention_mask"]
+
+        outputs = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+        )
+
+        logits = outputs.logits
+
+        shift_logits = logits[:, :-1, :]
+        shift_labels = input_ids[:, 1:]
+        shift_mask = attention_mask[:, 1:]
+
+        log_probs = F.log_softmax(shift_logits, dim=-1)
+
+        token_lp = log_probs.gather(
+            -1,
+            shift_labels.unsqueeze(-1),
+        ).squeeze(-1)
+
+        for i, label_text in enumerate(label_texts):
+            label_len = len(
+                tokenizer(
+                    label_text,
+                    add_special_tokens=False,
+                ).input_ids
+            )
+
+            valid_len = int(shift_mask[i].sum().item())
+
+            if valid_len <= 0 or label_len == 0:
+                scores.append(float("-inf"))
+                continue
+
+            start_pos = valid_len - label_len
+            end_pos = valid_len
+
+            if start_pos < 0:
+                scores.append(float("-inf"))
+                continue
+
+            label_lp = token_lp[i, start_pos:end_pos]
+            scores.append(label_lp.mean().item())
+
+    tokenizer.truncation_side = old_side
+
+    return scores
+
 def _run_evaluation(
     model,
     tokenizer,
@@ -349,13 +437,22 @@ def _run_evaluation(
         #    device=device,
         #    max_length=max_length,
         #)
-        scores = _score_choices_simple(
+        #scores = _score_choices_simple(
+        #    model=model,
+        #    tokenizer=tokenizer,
+        #    context=context,
+        #    choices=choices,
+        #    device=device,
+        #    max_length=max_length,
+        #)
+        scores = _score_choices_batched_simple(
             model=model,
             tokenizer=tokenizer,
             context=context,
             choices=choices,
             device=device,
             max_length=max_length,
+            label_batch_size=label_batch_size,
         )
 
         pred = int(torch.tensor(scores).argmax().item())
