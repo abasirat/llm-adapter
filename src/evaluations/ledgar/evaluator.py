@@ -42,6 +42,131 @@ from sklearn.metrics import f1_score
 from tqdm import tqdm
 
 from evaluations.utils import load_model
+from torch.utils.data import Dataset
+
+
+def verbalize_label(label: str) -> str:
+    return label.replace("_", " ").replace("-", " ").strip()
+
+
+class LEDGARGenerationDataset(Dataset):
+    """
+    LEDGAR as causal-LM label generation.
+
+    Each example is:
+
+        Contract provision:
+        <provision>
+
+        Category:
+        <label>
+
+    Loss is applied only to <label>.
+    """
+
+    def __init__(
+        self,
+        tokenizer,
+        split: str = "train",
+        max_length: int = 1024,
+        max_label_length: int = 16,
+        max_examples: int | None = None,
+    ):
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.max_label_length = max_label_length
+
+        self.dataset = load_dataset("lex_glue", "ledgar", split=split)
+        if max_examples is not None:
+            self.dataset = self.dataset.select(range(min(max_examples, len(self.dataset))))
+
+        self.label_names = self.dataset.features["label"].names
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        ex = self.dataset[idx]
+
+        text = ex["text"].strip()
+        label_id = int(ex["label"])
+        label = verbalize_label(self.label_names[label_id])
+
+        prompt = f"Contract provision:\n{text}\n\nCategory:"
+        target = " " + label
+
+        target_ids = self.tokenizer(
+            target,
+            add_special_tokens=False,
+        ).input_ids[: self.max_label_length]
+
+        max_prompt_len = self.max_length - len(target_ids)
+
+        prompt_ids = self.tokenizer(
+            prompt,
+            add_special_tokens=False,
+            truncation=True,
+            max_length=max_prompt_len,
+        ).input_ids
+
+        input_ids = prompt_ids + target_ids
+        labels = [-100] * len(prompt_ids) + target_ids
+        attention_mask = [1] * len(input_ids)
+
+        return {
+            "input_ids": torch.tensor(input_ids, dtype=torch.long),
+            "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
+            "labels": torch.tensor(labels, dtype=torch.long),
+            "label_id": torch.tensor(label_id, dtype=torch.long),
+        }
+
+
+def supervised_lm_collate(batch, pad_token_id: int):
+    max_len = max(len(x["input_ids"]) for x in batch)
+
+    input_ids = []
+    attention_mask = []
+    labels = []
+    label_ids = []
+
+    for x in batch:
+        pad_len = max_len - len(x["input_ids"])
+
+        input_ids.append(
+            torch.cat(
+                [
+                    x["input_ids"],
+                    torch.full((pad_len,), pad_token_id, dtype=torch.long),
+                ]
+            )
+        )
+
+        attention_mask.append(
+            torch.cat(
+                [
+                    x["attention_mask"],
+                    torch.zeros(pad_len, dtype=torch.long),
+                ]
+            )
+        )
+
+        labels.append(
+            torch.cat(
+                [
+                    x["labels"],
+                    torch.full((pad_len,), -100, dtype=torch.long),
+                ]
+            )
+        )
+
+        label_ids.append(x["label_id"])
+
+    return {
+        "input_ids": torch.stack(input_ids),
+        "attention_mask": torch.stack(attention_mask),
+        "labels": torch.stack(labels),
+        "label_id": torch.stack(label_ids),
+    }
 
 
 # ---------------------------------------------------------------------------

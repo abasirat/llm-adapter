@@ -41,14 +41,8 @@ from evaluations.utils import load_model
 # ---------------------------------------------------------------------------
 
 def _build_prompt(context: str, choice: str) -> str:
-    """Build the prompt for a CaseHOLD example, given the context and a candidate holding."""
-    try:
-        prefix, suffix = context.split("<HOLDING>")
-        prompt = prefix + " " + choice # ignore suffix for scoring
-        return prompt
-    except ValueError:
-        # Handle the case where "<HOLDING>" is not found
-        return context + " " + choice
+    prefix, _ = context.split("<HOLDING>")
+    return prefix + choice
 
 def _choice_avg_logprob(
     model,

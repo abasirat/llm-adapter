@@ -46,6 +46,8 @@ from train import (          # noqa: E402 – must follow sys.path adjustment
 
 import wandb                 # noqa: E402
 from llm_adapter import load_model as _llm_load_model  # noqa: E402
+from llm_adapter import setup_model as _llm_setup_model  # noqa: E402
+from evaluations.ledgar.evaluator import LEDGARGenerationDataset, supervised_lm_collate  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -89,14 +91,20 @@ def run_post_training(
     # ------------------------------------------------------------------
     # 1. Binarise task training data (idempotent – skipped when .bin exists)
     # ------------------------------------------------------------------
+    task_name = data_cfg.get("task_name")
 
-    bin_path = os.path.join(output_dir, "data.bin")
-    if not os.path.exists(bin_path) or data_cfg.get("force_prepare", True):
-        print(f"\n[post_training] Tokenising task data → {bin_path}")
-        data_cfg["output_dir"] = output_dir  # prepare_dataset expects an output_dir key
-        run_prepare_dataset(data_cfg)
+    if task_name not in {"ledgar"}:
+        bin_path = os.path.join(output_dir, "data.bin")
+        if not os.path.exists(bin_path) or data_cfg.get("force_prepare", True):
+            print(f"\n[post_training] Tokenising task data → {bin_path}")
+            data_cfg["output_dir"] = output_dir  # prepare_dataset expects an output_dir key
+            run_prepare_dataset(data_cfg)
+        else:
+            print(f"\n[post_training] Reusing tokenised data: {bin_path}")
     else:
-        print(f"\n[post_training] Reusing tokenised data: {bin_path}")
+        print(f"\n[post_training] Skipping data preparation for task {task_name!r} "
+              "(dataset will be loaded directly from HuggingFace).")
+        bin_path = None  # LEDGARGenerationDataset doesn't use a bin file
 
     # ------------------------------------------------------------------
     # 2. Load model — handle both .pt adapter checkpoints and plain HF model IDs
@@ -155,12 +163,41 @@ def run_post_training(
     print(f"  batch_size: {batch_size}")
     print(f"  val_fraction: {val_fraction}")
 
-    full_dataset = TokenBinDataset(bin_path, context_size=context_size)
+    #full_dataset = TokenBinDataset(bin_path, context_size=context_size)
+
+    task_name = data_cfg.get("task_name")
+    if task_name == "ledgar":
+        full_dataset = LEDGARGenerationDataset(
+            tokenizer=_tokenizer,
+            split=data_cfg.get("split", "train"),
+            max_length=training_cfg.get("context_size", 1024),
+            max_label_length=data_cfg.get("max_label_length", 16),
+        )
+        if _tokenizer.pad_token is None:
+            _tokenizer.pad_token = _tokenizer.eos_token
+        collate_fn = partial(
+            supervised_lm_collate,
+            pad_token_id=_tokenizer.pad_token_id,
+        )
+
+    #elif task_name == "casehold":
+    #    full_dataset = CaseHOLDGenerationDataset(
+    #        tokenizer=_tokenizer,
+    #        split=data_cfg.get("split", "train"),
+    #        max_length=training_cfg.get("context_size", 1024),
+    #    )
+    #    collate_fn = partial(
+    #        supervised_lm_collate,
+    #        pad_token_id=_tokenizer.pad_token_id,
+    #    )
+
+    else:
+        full_dataset = TokenBinDataset(bin_path, context_size=context_size)
+        collate_fn = partial(token_bin_collate, context_size=context_size)
 
     if len(full_dataset) == 0:
         raise RuntimeError(
-            f"TokenBinDataset at {bin_path} produced 0 chunks with "
-            f"context_size={context_size}. The bin file may be too small."
+            f"Dataset for task={task_name} is empty."
         )
 
     train_dataset = full_dataset
@@ -182,7 +219,7 @@ def run_post_training(
                 f"val: {val_size} chunks."
             )
 
-    collate_fn = partial(token_bin_collate, context_size=context_size)
+        #collate_fn = partial(token_bin_collate, context_size=context_size)
 
     train_dataloader = DataLoader(
         train_dataset,
