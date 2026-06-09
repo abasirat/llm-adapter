@@ -26,6 +26,12 @@ kl_loss_weight: 0.0
 kl_warmup_fraction: 0.0
 kl_schedule: linear
 
+# Default LEDGAR post-training strategy. Other tasks continue to use the
+# supervised LM objective in post_train_task.py.
+strategy: label_ranking
+ranking_num_negatives: 7
+ranking_margin: 0.2
+
 use_amp: true
 
 seed: 42

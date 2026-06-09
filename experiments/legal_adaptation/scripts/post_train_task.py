@@ -48,6 +48,7 @@ import wandb                 # noqa: E402
 from llm_adapter import load_model as _llm_load_model  # noqa: E402
 from llm_adapter import setup_model as _llm_setup_model  # noqa: E402
 from evaluations.ledgar.evaluator import LEDGARGenerationDataset, supervised_lm_collate  # noqa: E402
+from post_train_ledgar_ranking import run_ledgar_label_ranking_post_training  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +183,58 @@ def run_post_training(
     print(f"  context_size: {context_size}")
     print(f"  batch_size: {batch_size}")
     print(f"  val_fraction: {val_fraction}")
+
+    training_strategy = training_cfg.get("strategy")
+    if training_strategy is None:
+        training_strategy = "label_ranking" if task_name == "ledgar" else "supervised_lm"
+    print(f"  strategy: {training_strategy}")
+
+    if task_name == "ledgar" and training_strategy == "label_ranking":
+        os.makedirs(output_dir, exist_ok=True)
+        model_save_path = os.path.join(output_dir, "checkpoint")
+
+        if not os.path.exists(model_save_path) or training_cfg.get("force_retrain", False):
+            wandb.init(mode="disabled")
+            try:
+                run_ledgar_label_ranking_post_training(
+                    model=model,
+                    tokenizer=_tokenizer,
+                    adapter_type=adapter_type,
+                    adapter_config=adapter_config,
+                    training_cfg=training_cfg,
+                    data_cfg=data_cfg,
+                    output_dir=output_dir,
+                    device=device_obj,
+                    shift_regularization=shift_regularization,
+                    variational_modeling=variational_modeling,
+                    aggregation_strategy=aggregation_strategy,
+                    layer_adapter_max_temp=layer_adapter_max_temp,
+                    layer_adapter_min_temp=layer_adapter_min_temp,
+                )
+            finally:
+                wandb.finish()
+        else:
+            print(f"[post_training] Checkpoint already exists at {model_save_path}. "
+                  "Use --force_retrain to override.")
+
+        best_path  = model_save_path + "-best"
+        trace_path = model_save_path + "-trace"
+
+        if os.path.exists(best_path):
+            print(f"[post_training] Best checkpoint: {best_path}")
+            return best_path
+
+        if os.path.exists(trace_path):
+            print(
+                f"[post_training] No val-improvement checkpoint found; "
+                f"using trace checkpoint: {trace_path}"
+            )
+            return trace_path
+
+        raise FileNotFoundError(
+            f"Post-training did not produce any checkpoint under {output_dir!r}. "
+            "Check that ranking post-training ran for at least one checkpoint interval."
+        )
 
     #full_dataset = TokenBinDataset(bin_path, context_size=context_size)
 
