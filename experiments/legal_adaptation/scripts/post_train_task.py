@@ -91,7 +91,7 @@ def run_post_training(
     # ------------------------------------------------------------------
     # 1. Binarise task training data (idempotent – skipped when .bin exists)
     # ------------------------------------------------------------------
-    task_name = data_cfg.get("task_name")
+    task_name = data_cfg.get("task")
 
     if task_name not in {"ledgar"}:
         bin_path = os.path.join(output_dir, "data.bin")
@@ -165,7 +165,7 @@ def run_post_training(
 
     #full_dataset = TokenBinDataset(bin_path, context_size=context_size)
 
-    task_name = data_cfg.get("task_name")
+    task_name = data_cfg.get("task")
     if task_name == "ledgar":
         full_dataset = LEDGARGenerationDataset(
             tokenizer=_tokenizer,
