@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import random
-from typing import Dict, List, Sequence
+from typing import Any, Dict, List, Sequence, cast
 
 import torch
 import torch.nn.functional as F
@@ -23,7 +23,7 @@ class LEDGARRankingDataset(Dataset):
         split: str = "train",
         max_examples: int | None = None,
     ):
-        self.dataset = load_dataset("lex_glue", "ledgar", split=split)
+        self.dataset: Any = load_dataset("lex_glue", "ledgar", split=split)
         if max_examples is not None:
             self.dataset = self.dataset.select(range(min(max_examples, len(self.dataset))))
         self.label_names = self.dataset.features["label"].names
@@ -32,9 +32,9 @@ class LEDGARRankingDataset(Dataset):
         return len(self.dataset)
 
     def __getitem__(self, idx: int) -> Dict[str, object]:
-        ex = self.dataset[idx]
+        ex = cast(Dict[str, Any], self.dataset[idx])
         return {
-            "text": ex["text"].strip(),
+            "text": str(ex["text"]).strip(),
             "label_id": int(ex["label"]),
         }
 
@@ -42,8 +42,20 @@ class LEDGARRankingDataset(Dataset):
 def ranking_collate(batch: Sequence[Dict[str, object]]) -> Dict[str, object]:
     return {
         "texts": [str(item["text"]) for item in batch],
-        "label_ids": torch.tensor([int(item["label_id"]) for item in batch], dtype=torch.long),
+        "label_ids": torch.tensor([int(cast(int, item["label_id"])) for item in batch], dtype=torch.long),
     }
+
+
+def _as_int(value: object, default: int) -> int:
+    return default if value is None else int(cast(int, value))
+
+
+def _as_float(value: object, default: float) -> float:
+    return default if value is None else float(cast(float, value))
+
+
+def _as_str(value: object, default: str) -> str:
+    return default if value is None else str(cast(str, value))
 
 
 def _sample_negative_label_ids(
@@ -59,37 +71,62 @@ def _sample_negative_label_ids(
     return rng.sample(population, sample_size)
 
 
+def _build_label_token_cache(
+    tokenizer,
+    label_names: Sequence[str],
+    max_label_length: int,
+) -> List[List[int]]:
+    cached_label_token_ids: List[List[int]] = []
+    fallback_token_id = tokenizer.eos_token_id
+    if fallback_token_id is None:
+        raise ValueError("Tokenizer must define eos_token_id for LEDGAR ranking training.")
+
+    for label_name in label_names:
+        label_text = " " + verbalize_label(label_name)
+        label_token_ids = tokenizer(label_text, add_special_tokens=False).input_ids[:max_label_length]
+        if not label_token_ids:
+            label_token_ids = [fallback_token_id]
+        cached_label_token_ids.append(label_token_ids)
+
+    return cached_label_token_ids
+
+# This could be improved by using the tokenizer's batch encoding and padding features
 def _build_scoring_batch(
     tokenizer,
     texts: Sequence[str],
     candidate_label_ids: Sequence[Sequence[int]],
-    label_names: Sequence[str],
+    label_token_cache: Sequence[Sequence[int]],
     max_length: int,
-    max_label_length: int,
     truncation_side: str,
 ) -> tuple[torch.Tensor, torch.Tensor, List[int]]:
     input_id_rows: List[List[int]] = []
     attention_rows: List[List[int]] = []
     label_lengths: List[int] = []
 
+    assert len(texts) == len(candidate_label_ids), "Mismatched number of texts and candidate label sets."
+    
     old_side = tokenizer.truncation_side
     tokenizer.truncation_side = truncation_side
     try:
         for text, candidates in zip(texts, candidate_label_ids):
             prompt = f"Contract provision:\n{text.strip()}\n\nCategory:"
+            prompt_token_ids = tokenizer(
+                prompt,
+                add_special_tokens=False,
+                truncation=False,
+            ).input_ids
+
             for label_id in candidates:
-                label_text = " " + verbalize_label(label_names[label_id])
-                label_token_ids = tokenizer(label_text, add_special_tokens=False).input_ids[:max_label_length]
-                if not label_token_ids:
-                    label_token_ids = [tokenizer.eos_token_id]
+                label_token_ids = list(label_token_cache[label_id])
 
                 max_prompt_len = max(1, max_length - len(label_token_ids))
-                prompt_ids = tokenizer(
-                    prompt,
-                    add_special_tokens=False,
-                    truncation=True,
-                    max_length=max_prompt_len,
-                ).input_ids
+                if len(prompt_token_ids) > max_prompt_len:
+                    if truncation_side == "left":
+                        prompt_ids = prompt_token_ids[-max_prompt_len:]
+                    else:
+                        prompt_ids = prompt_token_ids[:max_prompt_len]
+                else:
+                    prompt_ids = prompt_token_ids
 
                 input_ids = prompt_ids + label_token_ids
                 attention_mask = [1] * len(input_ids)
@@ -124,19 +161,17 @@ def _score_candidates(
     tokenizer,
     texts: Sequence[str],
     candidate_label_ids: Sequence[Sequence[int]],
-    label_names: Sequence[str],
+    label_token_cache: Sequence[Sequence[int]],
     device: torch.device,
     max_length: int,
-    max_label_length: int,
     truncation_side: str,
 ) -> torch.Tensor:
     input_ids, attention_mask, label_lengths = _build_scoring_batch(
         tokenizer=tokenizer,
         texts=texts,
         candidate_label_ids=candidate_label_ids,
-        label_names=label_names,
+        label_token_cache=label_token_cache,
         max_length=max_length,
-        max_label_length=max_label_length,
         truncation_side=truncation_side,
     )
 
@@ -169,9 +204,9 @@ def _evaluate_ranking_loss(
     dataloader,
     tokenizer,
     label_names: Sequence[str],
+    label_token_cache: Sequence[Sequence[int]],
     device: torch.device,
     max_length: int,
-    max_label_length: int,
     truncation_side: str,
     num_negatives: int,
     margin: float,
@@ -197,10 +232,9 @@ def _evaluate_ranking_loss(
                 tokenizer=tokenizer,
                 texts=texts,
                 candidate_label_ids=candidate_label_ids,
-                label_names=label_names,
+                label_token_cache=label_token_cache,
                 device=device,
                 max_length=max_length,
-                max_label_length=max_label_length,
                 truncation_side=truncation_side,
             )
 
@@ -236,51 +270,39 @@ def run_ledgar_label_ranking_post_training(
     layer_adapter_max_temp: float = 2.0,
     layer_adapter_min_temp: float = 0.8,
 ) -> None:
-    seed = int(training_cfg.get("seed", 42))
-    batch_size = int(training_cfg.get("batch_size", 8))
-    num_workers = int(training_cfg.get("num_workers", 0))
-    num_epochs = int(training_cfg.get("num_epochs", 3))
-    learning_rate = float(training_cfg.get("learning_rate", 1e-4))
-    weight_decay = float(training_cfg.get("weight_decay", 0.01))
-    adam_beta1 = float(training_cfg.get("adam_beta1", 0.9))
-    adam_beta2 = float(training_cfg.get("adam_beta2", 0.999))
-    progress_interval = int(training_cfg.get("progress_interval", 10))
-    val_interval = int(training_cfg.get("val_interval", 50))
-    val_fraction = float(training_cfg.get("val_fraction", 0.1))
-    early_stopping_patience = int(training_cfg.get("early_stopping_patience", 3))
-    early_stopping_min_delta = float(training_cfg.get("early_stopping_min_delta", 1e-4))
-    gradient_clip_norm = float(training_cfg.get("gradient_clip_norm", 1.0))
+    seed = _as_int(training_cfg.get("seed"), 42)
+    batch_size = _as_int(training_cfg.get("batch_size"), 8)
+    num_workers = _as_int(training_cfg.get("num_workers"), 0)
+    num_epochs = _as_int(training_cfg.get("num_epochs"), 3)
+    learning_rate = _as_float(training_cfg.get("learning_rate"), 1e-4)
+    weight_decay = _as_float(training_cfg.get("weight_decay"), 0.01)
+    adam_beta1 = _as_float(training_cfg.get("adam_beta1"), 0.9)
+    adam_beta2 = _as_float(training_cfg.get("adam_beta2"), 0.999)
+    progress_interval = _as_int(training_cfg.get("progress_interval"), 10)
+    val_interval = _as_int(training_cfg.get("val_interval"), 50)
+    early_stopping_patience = _as_int(training_cfg.get("early_stopping_patience"), 3)
+    early_stopping_min_delta = _as_float(training_cfg.get("early_stopping_min_delta"), 1e-4)
+    gradient_clip_norm = _as_float(training_cfg.get("gradient_clip_norm"), 1.0)
     use_amp = bool(training_cfg.get("use_amp", True)) and device.type == "cuda"
-    kl_loss_weight = float(training_cfg.get("kl_loss_weight", 0.0))
+    kl_loss_weight = _as_float(training_cfg.get("kl_loss_weight"), 0.0)
 
-    max_length = int(training_cfg.get("context_size", 512))
-    max_label_length = int(data_cfg.get("max_label_length", training_cfg.get("max_label_length", 24)))
-    truncation_side = str(data_cfg.get("truncation_side", training_cfg.get("truncation_side", "left")))
-    num_negatives = int(training_cfg.get("ranking_num_negatives", 7))
-    margin = float(training_cfg.get("ranking_margin", 0.2))
+    max_length = _as_int(training_cfg.get("context_size"), 512)
+    max_label_length = _as_int(data_cfg.get("max_label_length", training_cfg.get("max_label_length")), 24)
+    truncation_side = _as_str(data_cfg.get("truncation_side", training_cfg.get("truncation_side")), "left")
+    num_negatives = _as_int(training_cfg.get("ranking_num_negatives"), 7)
+    margin = _as_float(training_cfg.get("ranking_margin"), 0.2)
 
-    dataset = LEDGARRankingDataset(
-        split=str(data_cfg.get("split", "train")),
-        max_examples=data_cfg.get("max_examples"),
+    train_dataset = LEDGARRankingDataset(
+        split=_as_str(data_cfg.get("train_split"), "train"),
+        max_examples=cast(int | None, data_cfg.get("max_train_examples")),
     )
-    if len(dataset) == 0:
+    if len(train_dataset) == 0:
         raise RuntimeError("LEDGAR ranking dataset is empty.")
-
-    train_dataset = dataset
-    val_dataset = None
-    if val_fraction > 0.0 and len(dataset) > 1:
-        val_size = max(1, int(len(dataset) * val_fraction))
-        train_size = len(dataset) - val_size
-        if train_size >= 1:
-            train_dataset, val_dataset = torch.utils.data.random_split(
-                dataset,
-                [train_size, val_size],
-                generator=torch.Generator().manual_seed(seed),
-            )
-            print(
-                f"[post_training] LEDGAR ranking split – train: {train_size} examples, "
-                f"val: {val_size} examples."
-            )
+    
+    val_dataset = LEDGARRankingDataset(
+        split=_as_str(data_cfg.get("validation_split"), "validation"),
+        max_examples=cast(int | None, data_cfg.get("max_validation_examples")),
+    ) if data_cfg.get("validation_split") else None
 
     train_dataloader = DataLoader(
         train_dataset,
@@ -306,13 +328,20 @@ def run_ledgar_label_ranking_post_training(
     if not trainable_params:
         raise RuntimeError("No trainable parameters available for LEDGAR ranking post-training.")
 
+    label_names = train_dataset.label_names
+    label_token_cache = _build_label_token_cache(
+        tokenizer=tokenizer,
+        label_names=label_names,
+        max_label_length=max_label_length,
+    )
+
     optimizer = AdamW(
         trainable_params,
         lr=learning_rate,
         betas=(adam_beta1, adam_beta2),
         weight_decay=weight_decay,
     )
-    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
     best_val_loss = float("inf")
     patience_counter = 0
     step = 0
@@ -339,7 +368,7 @@ def run_ledgar_label_ranking_post_training(
             texts = batch["texts"]
             gold_label_ids = batch["label_ids"].tolist()
             candidate_label_ids = [
-                [gold_label_id] + _sample_negative_label_ids(gold_label_id, len(dataset.label_names), num_negatives, rng)
+                [gold_label_id] + _sample_negative_label_ids(gold_label_id, len(label_names), num_negatives, rng)
                 for gold_label_id in gold_label_ids
             ]
 
@@ -361,10 +390,9 @@ def run_ledgar_label_ranking_post_training(
                     tokenizer=tokenizer,
                     texts=texts,
                     candidate_label_ids=candidate_label_ids,
-                    label_names=dataset.label_names,
+                    label_token_cache=label_token_cache,
                     device=device,
                     max_length=max_length,
-                    max_label_length=max_label_length,
                     truncation_side=truncation_side,
                 )
 
@@ -412,10 +440,10 @@ def run_ledgar_label_ranking_post_training(
                     model=raw_model,
                     dataloader=val_dataloader,
                     tokenizer=tokenizer,
-                    label_names=dataset.label_names,
+                    label_names=label_names,
+                    label_token_cache=label_token_cache,
                     device=device,
                     max_length=max_length,
-                    max_label_length=max_label_length,
                     truncation_side=truncation_side,
                     num_negatives=num_negatives,
                     margin=margin,
