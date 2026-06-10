@@ -199,6 +199,58 @@ def _score_candidates(
     return torch.stack(flat_scores).view(len(texts), num_candidates)
 
 
+def _evaluate_full_label_accuracy(
+    model,
+    dataloader,
+    tokenizer,
+    label_names: Sequence[str],
+    label_token_cache: Sequence[Sequence[int]],
+    device: torch.device,
+    max_length: int,
+    truncation_side: str,
+    label_batch_size: int,
+) -> tuple[float, float]:
+    """Evaluate the full LEDGAR label set in chunks.
+
+    The returned loss is defined as 1 - accuracy so existing checkpoint logic
+    can continue to minimize it.
+    """
+    model.eval()
+    total_correct = 0
+    total_examples = 0
+    all_label_ids = list(range(len(label_names)))
+
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Full-label validation"):
+            texts = batch["texts"]
+            gold_label_ids = batch["label_ids"].tolist()
+
+            chunk_scores: List[torch.Tensor] = []
+            for start in range(0, len(all_label_ids), label_batch_size):
+                label_chunk = all_label_ids[start:start + label_batch_size]
+                scores = _score_candidates(
+                    model=model,
+                    tokenizer=tokenizer,
+                    texts=texts,
+                    candidate_label_ids=[label_chunk for _ in texts],
+                    label_token_cache=label_token_cache,
+                    device=device,
+                    max_length=max_length,
+                    truncation_side=truncation_side,
+                )
+                chunk_scores.append(scores)
+
+            scores = torch.cat(chunk_scores, dim=1)
+            predictions = scores.argmax(dim=1)
+            gold = torch.tensor(gold_label_ids, device=predictions.device)
+            total_correct += int((predictions == gold).sum().item())
+            total_examples += len(texts)
+
+    accuracy = total_correct / max(total_examples, 1)
+    loss = 1.0 - accuracy
+    return loss, accuracy
+
+
 def _evaluate_ranking_loss(
     model,
     dataloader,
@@ -285,6 +337,7 @@ def run_ledgar_label_ranking_post_training(
     gradient_clip_norm = _as_float(training_cfg.get("gradient_clip_norm"), 1.0)
     use_amp = bool(training_cfg.get("use_amp", True)) and device.type == "cuda"
     kl_loss_weight = _as_float(training_cfg.get("kl_loss_weight"), 0.0)
+    validation_label_batch_size = _as_int(training_cfg.get("validation_label_batch_size"), 32)
 
     max_length = _as_int(training_cfg.get("context_size"), 512)
     max_label_length = _as_int(data_cfg.get("max_label_length", training_cfg.get("max_label_length")), 24)
@@ -356,6 +409,7 @@ def run_ledgar_label_ranking_post_training(
     print(f"  max_length: {max_length}")
     print(f"  max_label_length: {max_label_length}")
     print(f"  truncation_side: {truncation_side}")
+    print(f"  validation_label_batch_size: {validation_label_batch_size}")
 
     for epoch in range(num_epochs):
         raw_model.train()
@@ -436,7 +490,7 @@ def run_ledgar_label_ranking_post_training(
                 )
 
             if val_dataloader is not None and (step % val_interval == 0):
-                val_loss, val_acc = _evaluate_ranking_loss(
+                val_loss, val_acc = _evaluate_full_label_accuracy(
                     model=raw_model,
                     dataloader=val_dataloader,
                     tokenizer=tokenizer,
@@ -445,11 +499,9 @@ def run_ledgar_label_ranking_post_training(
                     device=device,
                     max_length=max_length,
                     truncation_side=truncation_side,
-                    num_negatives=num_negatives,
-                    margin=margin,
-                    seed=seed,
+                    label_batch_size=validation_label_batch_size,
                 )
-                print(f"[post_training] Ranking val loss: {val_loss:.4f}, sampled val acc: {val_acc:.4f}")
+                print(f"[post_training] Full-label val loss: {val_loss:.4f}, full-label val acc: {val_acc:.4f}")
                 save_model(raw_model, adapter_type, adapter_config, os_path_trace)
 
                 if val_loss < best_val_loss - early_stopping_min_delta:
