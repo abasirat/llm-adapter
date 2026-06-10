@@ -8,10 +8,13 @@
 
 dataset_name: lex_glue
 dataset_config: ledgar
-split: train
 task: ledgar              # triggers _apply_task_formatter in prepare_dataset.py
 
+train_split: train
+validation_split: validation
+
+max_train_examples: null
+max_validation_examples: null
+
 tokenizer_name: gpt2
-output_prefix: outputs/post_training_data/ledgar
-max_bin_size_gb: 1.0
 streaming: false
