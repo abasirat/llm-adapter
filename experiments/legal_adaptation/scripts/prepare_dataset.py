@@ -81,6 +81,9 @@ def preprocess_text(
 ):
     if text is None:
         return None
+    
+    if isinstance(text, list):
+        text = "\n".join(text)
 
     if strip_whitespace:
         text = text.strip()
