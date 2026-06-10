@@ -514,6 +514,7 @@ class LayerAdapter(torch.nn.Module):
         variational_use_mean_in_eval=True,
         kl_reduction="mean",
         min_std=1e-6,
+        shift_regularization=False, # this isn't used here, but I want to use it because I want to include it in the save model. 
     ):
         super().__init__()
 
