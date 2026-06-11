@@ -8,6 +8,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -25,9 +26,9 @@ from evaluations.casehold.evaluator import _build_prompt as _casehold_build_prom
 logger = logging.getLogger(__name__)
 
 
-def setup_logging():
+def setup_logging(level=logging.INFO):
     logging.basicConfig(
-        level=logging.INFO,
+        level=level,
         format="%(asctime)s | %(levelname)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
@@ -81,9 +82,6 @@ def preprocess_text(
 ):
     if text is None:
         return None
-    
-    if isinstance(text, list):
-        text = "\n".join(text)
 
     if strip_whitespace:
         text = text.strip()
@@ -103,6 +101,21 @@ def preprocess_text(
 
     return text
 
+def clean_text(text, cleaning_rules):
+    if text is None:
+        return None
+    regex_substitutions = cleaning_rules.get("regex_substitutions", [])
+    for rule in regex_substitutions:
+        logger.debug("Applying cleaning rule: %s", rule)
+        pattern = rule.get("pattern")
+        replacement = rule.get("replacement", "")
+        logger.debug("Pattern: %s | Replacement: %s", pattern, replacement)
+        logger.debug("Original text sample: %s", text[:200])
+        if pattern is not None:
+            text = re.sub(pattern, replacement, text)
+        logger.debug("Cleaned text sample: %s", text[:200])
+    return text
+
 
 def tokenize_iterator(
     iterator,
@@ -113,6 +126,7 @@ def tokenize_iterator(
     chunk_size=4096,
     max_tokens=None,
     preprocessing=None,
+    cleaning=None,
 ):
     eos_id = tokenizer.eos_token_id
 
@@ -135,6 +149,9 @@ def tokenize_iterator(
 
             text = text_getter(sample)
             text = preprocess_text(text, **preprocessing)
+
+            if cleaning:
+                text = clean_text(text, cleaning)
 
             if not text:
                 continue
@@ -276,6 +293,7 @@ def run_prepare_dataset(cfg: dict) -> None:
     logger.info("Maximum tokens: %s", f"{max_tokens:,}")
 
     preprocessing = cfg.get("preprocessing", {})
+    cleaning = cfg.get("cleaning", {})
 
     if cfg.get("dataset_name"):
         from datasets import load_dataset
@@ -321,6 +339,7 @@ def run_prepare_dataset(cfg: dict) -> None:
             chunk_size=cfg.get("chunk_size", 4096),
             max_tokens=max_tokens,
             preprocessing=preprocessing,
+            cleaning=cleaning,
         )
 
         datasets_version = _datasets_mod.__version__
@@ -341,6 +360,7 @@ def run_prepare_dataset(cfg: dict) -> None:
                 chunk_size=cfg.get("chunk_size", 4096),
                 max_tokens=max_tokens,
                 preprocessing=preprocessing,
+                cleaning=cleaning,
             )
 
         datasets_version = None
@@ -367,6 +387,7 @@ def run_prepare_dataset(cfg: dict) -> None:
             "tokenizer_length": len(tokenizer),
         },
         "preprocessing": preprocessing,
+        "cleaning": cleaning,
         "storage": {
             "bin_path": bin_path,
             "metadata_path": meta_path,
@@ -441,7 +462,7 @@ def merge_config_and_args(args, cfg):
 
 
 def main():
-    setup_logging()
+    setup_logging(logging.INFO)
     args = parse_args()
     cfg = load_yaml(args.config)
     cfg = merge_config_and_args(args, cfg)
