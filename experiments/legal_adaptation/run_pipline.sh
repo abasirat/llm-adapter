@@ -2,8 +2,13 @@
 set -euo pipefail
 
 EXPERIMENT_ROOT="outputs/legal_pile_gpt2_adaptation"
-TRAIN_DATA_CONFIG="configs/data/legal_pile_train.yaml"
-VAL_DATA_CONFIG="configs/data/legal_pile_val.yaml"
+TRAIN_DATA_CONFIG="configs/data/legal_pile_courtlistener_opinions_train.yaml"
+VAL_DATA_CONFIG="configs/data/legal_pile_courtlistener_opinions_val.yaml"
+
+#EXPERIMENT_ROOT="outputs/medical_pubmed_gpt2_adaptation"
+#TRAIN_DATA_CONFIG="configs/data/pubmed_train.yaml"
+#VAL_DATA_CONFIG="configs/data/pubmed_val.yaml"
+
 TRAINING_CONFIG="configs/training/causal_lm.yaml"
 EVAL_CONFIG="configs/evaluation/legal_eval.yaml"
 
@@ -12,14 +17,14 @@ MODELS=(
 )
 
 ADAPTERS=(
-  #"configs/attention/attention_q32_v512_h4_pre_var0_sh0.yaml"
+  "configs/adapters/attention/attention_q32_v512_h4_pre_var0_sh0.yaml"
   # "configs/adapters/lora_default.yaml"
-  "configs/adapters/none.yaml"
+  #"configs/adapters/none.yaml"
 )
 
-data_prepare=false
+data_prepare=true
 train=false
-evaluate=true
+evaluate=false
 
 # data preparation
 if [ "$data_prepare" = true ]; then

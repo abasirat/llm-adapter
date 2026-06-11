@@ -21,6 +21,8 @@ import transformers
 from evaluations.ledgar.evaluator import _build_prompt as _ledgar_build_prompt
 from evaluations.casehold.evaluator import _build_prompt as _casehold_build_prompt
 
+import datetime # used for filtering operations defined in the data config file
+
 
 
 logger = logging.getLogger(__name__)
@@ -327,6 +329,13 @@ def run_prepare_dataset(cfg: dict) -> None:
                 dataset = dataset.take(max_samples)
             else:
                 dataset = dataset.select(range(min(max_samples, len(dataset))))
+        
+        if cfg.get("filters"):
+            for filter_cfg in cfg["filters"]:
+                filter_name = filter_cfg.get("name", "unnamed_filter")
+                operation = filter_cfg["operation"]
+                logger.info("Applying filter: %s | operation: %s", filter_name, operation)
+                dataset = dataset.filter(eval(operation))
 
         text_getter = _build_text_getter(cfg, dataset, tokenizer=tokenizer)
 
