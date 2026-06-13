@@ -513,8 +513,8 @@ def merge_config_and_args(args, cfg):
         if value is not None:
             data[key] = value
 
-    if not data.get("dataset_name") and not data.get("input_file"):
-        raise ValueError("Provide either dataset_name or input_file.")
+    if not data.get("dataset_name") and not data.get("input_file") and not data.get("data_files"):
+        raise ValueError("Provide either dataset_name, input_file, or data_files.")
 
     if not data.get("output_dir"):
         raise ValueError("output_dir is required.")
