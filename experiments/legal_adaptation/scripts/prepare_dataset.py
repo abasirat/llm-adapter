@@ -5,6 +5,7 @@ The dataset is tokenised and packed into a single binary file containing a flat 
 """
 
 import argparse
+import glob
 import json
 import logging
 import os
@@ -400,31 +401,47 @@ def run_prepare_dataset(cfg: dict) -> None:
             )
 
         datasets_version = None
-    
+
     elif cfg.get("data_files"):
-        data_files = cfg["data_files"]
+            patterns = cfg["data_files"]
 
-        if not isinstance(data_files, list):
-            sys.exit("data_files must be a list of file paths.")
+            if not isinstance(patterns, list):
+                sys.exit("data_files must be a list of file paths.")
 
-        for file in data_files:
-            if not os.path.exists(file):
-                sys.exit(f"Input file not found: {file}")
+            data_files = []
 
-        stats = tokenize_iterator(
-            iterator=gz_data_files_iterator(data_files),
-            tokenizer=tokenizer,
-            output_path=bin_path,
-            dtype=dtype,
-            text_getter=lambda line: line,
-            chunk_size=cfg.get("chunk_size", 4096),
-            max_tokens=max_tokens,
-            preprocessing=preprocessing,
-            cleaning=cleaning,
-            text_path=text_path,
-        )
+            for pattern in patterns:
+                matches = glob.glob(pattern, recursive=True)
 
-        datasets_version = None
+                if not matches:
+                    sys.exit(f"No files matched pattern: {pattern}")
+
+                data_files.extend(matches)
+
+            # Keep only actual files
+            data_files = [
+                f for f in data_files
+                if os.path.isfile(f)
+            ]
+
+            print(f"Found {len(data_files)} files")
+            print("First few files:")
+            for f in data_files[:10]:
+                print(f)
+
+            stats = tokenize_iterator(
+                iterator=gz_data_files_iterator(data_files),
+                tokenizer=tokenizer,
+                output_path=bin_path,
+                dtype=dtype,
+                text_getter=lambda line: line,
+                chunk_size=cfg.get("chunk_size", 4096),
+                max_tokens=max_tokens,
+                preprocessing=preprocessing,
+                cleaning=cleaning,
+                text_path=text_path,
+            )
+            datasets_version = None    
 
     file_size_mb = os.path.getsize(bin_path) / (1024**2)
 
