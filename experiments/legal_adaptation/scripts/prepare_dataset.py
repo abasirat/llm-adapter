@@ -120,6 +120,12 @@ def clean_text(text, cleaning_rules):
         logger.debug("Cleaned text sample: %s", text[:200])
     return text
 
+def gz_data_files_iterator(file_paths):
+    import gzip
+    for file_path in file_paths:
+        with gzip.open(file_path, "rt", encoding="utf-8") as f:
+            for line in f:
+                yield line.rstrip("\n")
 
 def tokenize_iterator(
     iterator,
@@ -373,7 +379,7 @@ def run_prepare_dataset(cfg: dict) -> None:
 
         datasets_version = _datasets_mod.__version__
 
-    else:
+    elif cfg.get("input_file"):
         input_file = cfg["input_file"]
 
         if not os.path.exists(input_file):
@@ -392,6 +398,31 @@ def run_prepare_dataset(cfg: dict) -> None:
                 cleaning=cleaning,
                 text_path=text_path,
             )
+
+        datasets_version = None
+    
+    elif cfg.get("data_files"):
+        data_files = cfg["data_files"]
+
+        if not isinstance(data_files, list):
+            sys.exit("data_files must be a list of file paths.")
+
+        for file in data_files:
+            if not os.path.exists(file):
+                sys.exit(f"Input file not found: {file}")
+
+        stats = tokenize_iterator(
+            iterator=gz_data_files_iterator(data_files),
+            tokenizer=tokenizer,
+            output_path=bin_path,
+            dtype=dtype,
+            text_getter=lambda line: line,
+            chunk_size=cfg.get("chunk_size", 4096),
+            max_tokens=max_tokens,
+            preprocessing=preprocessing,
+            cleaning=cleaning,
+            text_path=text_path,
+        )
 
         datasets_version = None
 
