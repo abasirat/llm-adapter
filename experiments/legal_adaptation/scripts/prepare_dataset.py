@@ -205,6 +205,8 @@ def tokenize_iterator(
             logger.warning("Tokenization timed out. Ignore the current sample and continue.")
         except HfHubHTTPError as e:
             logger.warning("Hugging Face Hub HTTP error during tokenization: %s. Ignore the current sample and continue.", str(e))
+        except RuntimeError as e:
+            logger.warning("Runtime error during tokenization (possibly due to a very long document): %s. Ignore the current sample and continue.", str(e))
 
 
 
