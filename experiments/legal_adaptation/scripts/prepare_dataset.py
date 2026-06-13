@@ -21,6 +21,8 @@ import transformers
 from evaluations.ledgar.evaluator import _build_prompt as _ledgar_build_prompt
 from evaluations.casehold.evaluator import _build_prompt as _casehold_build_prompt
 
+from huggingface_hub.errors import HfHubHTTPError  # to catch potential HTTP errors when streaming datasets from Hugging Face Hub
+
 import datetime # used for filtering operations defined in the data config file
 
 
@@ -201,6 +203,8 @@ def tokenize_iterator(
 
         except TimeoutError:
             logger.warning("Tokenization timed out. Ignore the current sample and continue.")
+        except HfHubHTTPError as e:
+            logger.warning("Hugging Face Hub HTTP error during tokenization: %s. Ignore the current sample and continue.", str(e))
 
 
 
