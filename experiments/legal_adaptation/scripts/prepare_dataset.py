@@ -26,6 +26,9 @@ from huggingface_hub.errors import HfHubHTTPError  # to catch potential HTTP err
 
 import datetime # used for filtering operations defined in the data config file
 
+import gzip
+import json
+
 
 
 logger = logging.getLogger(__name__)
@@ -121,16 +124,37 @@ def clean_text(text, cleaning_rules):
         logger.debug("Cleaned text sample: %s", text[:200])
     return text
 
-def gz_data_files_iterator(file_paths, text_column=None, json_format=False):
-    import gzip
+def gz_data_files_iterator(
+    file_paths,
+    text_column=None,
+    json_format=False,
+    filter_func=None,
+):
     for file_path in file_paths:
         with gzip.open(file_path, "rt", encoding="utf-8") as f:
             for line in f:
-                if json_format:
-                    line = json.loads(line)
-                if text_column is not None:
-                    line = json.loads(line).get(text_column)
-                yield line.rstrip("\n")
+                line = line.rstrip("\n")
+
+                if json_format or text_column is not None:
+                    obj = json.loads(line)
+
+                    if filter_func is not None and not filter_func(obj):
+                        continue
+
+                    if text_column is not None:
+                        text = obj.get(text_column)
+                    else:
+                        text = obj
+                else:
+                    text = line
+
+                    if filter_func is not None and not filter_func(text):
+                        continue
+
+                if text is None:
+                    continue
+
+                yield text
 
 def tokenize_iterator(
     iterator,
@@ -432,9 +456,26 @@ def run_prepare_dataset(cfg: dict) -> None:
             print("First few files:")
             for f in data_files[:10]:
                 print(f)
+            
+            filter_func = None
+            if cfg.get("filters"):
+                filter_cfgs = cfg["filters"]
+                if not isinstance(filter_cfgs, list):
+                    sys.exit("filters must be a list of filter configurations.")
+                filter_funcs = []
+                for filter_cfg in filter_cfgs:
+                    filter_name = filter_cfg.get("name", "unnamed_filter")
+                    operation = filter_cfg["operation"]
+                    logger.info("Applying filter: %s | operation: %s", filter_name, operation)
+                    filter_funcs.append(eval(operation))
+                def combined_filter_func(x):
+                    return all(f(x) for f in filter_funcs)
+                filter_func = combined_filter_func
+
+            df_iterator = gz_data_files_iterator(data_files, text_column=cfg.get("text_column"), json_format=cfg.get("json_format", False), filter_func=filter_func)
 
             stats = tokenize_iterator(
-                iterator=gz_data_files_iterator(data_files),
+                iterator=df_iterator,
                 tokenizer=tokenizer,
                 output_path=bin_path,
                 dtype=dtype,
