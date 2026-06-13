@@ -129,6 +129,7 @@ def tokenize_iterator(
     max_tokens=None,
     preprocessing=None,
     cleaning=None,
+    text_path=None,
 ):
     eos_id = tokenizer.eos_token_id
 
@@ -144,53 +145,64 @@ def tokenize_iterator(
     output_capped = False
     any_truncated = False
 
+    text_out_file = open(text_path, "w", encoding="utf-8") if text_path else None
+
     progress_bar = tqdm(desc="Tokenizing", unit="doc", total=max_tokens)
     with open(output_path, "wb") as out_file:
-        for sample in iterator:
-            docs_seen += 1
+        try:
+            for sample in iterator:
+                docs_seen += 1
 
-            text = text_getter(sample)
-            text = preprocess_text(text, **preprocessing)
+                text = text_getter(sample)
+                text = preprocess_text(text, **preprocessing)
 
-            if cleaning:
-                text = clean_text(text, cleaning)
+                if cleaning:
+                    text = clean_text(text, cleaning)
 
-            if not text:
-                continue
+                if not text:
+                    continue
 
-            ids = tokenizer(
-                text,
-                truncation=False,
-                add_special_tokens=False,
-            ).input_ids
+                if text_out_file:
+                    text_out_file.write(text)
 
-            ids.append(eos_id)
+                ids = tokenizer(
+                    text,
+                    truncation=False,
+                    add_special_tokens=False,
+                ).input_ids
 
-            ids, limit_reached, doc_truncated = fit_document_to_budget(
-                ids=ids,
-                eos_id=eos_id,
-                tokens_written=total_tokens,
-                max_tokens=max_tokens,
-            )
+                ids.append(eos_id)
 
-            any_truncated = any_truncated or doc_truncated
+                ids, limit_reached, doc_truncated = fit_document_to_budget(
+                    ids=ids,
+                    eos_id=eos_id,
+                    tokens_written=total_tokens,
+                    max_tokens=max_tokens,
+                )
 
-            if limit_reached and not ids:
-                output_capped = True
-                break
+                any_truncated = any_truncated or doc_truncated
 
-            write_buffer.extend(ids)
-            total_tokens += len(ids)
-            docs_written += 1
+                if limit_reached and not ids:
+                    output_capped = True
+                    break
 
-            if len(write_buffer) >= chunk_size * 256:
-                flush_buffer(write_buffer, out_file, dtype)
-                progress_bar.update(len(write_buffer))
-                write_buffer = []
+                write_buffer.extend(ids)
+                total_tokens += len(ids)
+                docs_written += 1
 
-            if limit_reached:
-                output_capped = True
-                break
+                if len(write_buffer) >= chunk_size * 256:
+                    flush_buffer(write_buffer, out_file, dtype)
+                    progress_bar.update(len(write_buffer))
+                    write_buffer = []
+
+                if limit_reached:
+                    output_capped = True
+                    break
+
+        except TimeoutError:
+            logger.warning("Tokenization timed out. Ignore the current sample and continue.")
+
+
 
         if write_buffer:
             flush_buffer(write_buffer, out_file, dtype)
@@ -286,6 +298,7 @@ def run_prepare_dataset(cfg: dict) -> None:
 
     bin_path = str(Path(output_dir) / "data.bin")
     meta_path = str(Path(output_dir) / "data.json")
+    text_path = str(Path(output_dir) / "data.txt") if cfg.get("save_text", False) else None
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -349,6 +362,7 @@ def run_prepare_dataset(cfg: dict) -> None:
             max_tokens=max_tokens,
             preprocessing=preprocessing,
             cleaning=cleaning,
+            text_path=text_path,
         )
 
         datasets_version = _datasets_mod.__version__
@@ -370,6 +384,7 @@ def run_prepare_dataset(cfg: dict) -> None:
                 max_tokens=max_tokens,
                 preprocessing=preprocessing,
                 cleaning=cleaning,
+                text_path=text_path,
             )
 
         datasets_version = None
