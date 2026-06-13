@@ -121,11 +121,15 @@ def clean_text(text, cleaning_rules):
         logger.debug("Cleaned text sample: %s", text[:200])
     return text
 
-def gz_data_files_iterator(file_paths):
+def gz_data_files_iterator(file_paths, text_column=None, json_format=False):
     import gzip
     for file_path in file_paths:
         with gzip.open(file_path, "rt", encoding="utf-8") as f:
             for line in f:
+                if json_format:
+                    line = json.loads(line)
+                if text_column is not None:
+                    line = json.loads(line).get(text_column)
                 yield line.rstrip("\n")
 
 def tokenize_iterator(
