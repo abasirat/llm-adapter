@@ -127,6 +127,7 @@ def clean_text(text, cleaning_rules):
 def gz_data_files_iterator(
     file_paths,
     text_column=None,
+    text_columns=None,
     json_format=False,
     filter_func=None,
 ):
@@ -141,7 +142,7 @@ def gz_data_files_iterator(
             for line in f:
                 line = line.rstrip("\n")
 
-                if json_format or text_column is not None:
+                if json_format or text_column or text_columns is not None:
                     obj = json.loads(line)
 
                     if filter_func is not None and not filter_func(obj):
@@ -149,6 +150,8 @@ def gz_data_files_iterator(
 
                     if text_column is not None:
                         text = obj.get(text_column)
+                    elif text_columns is not None:
+                        text = "\n".join(obj.get(col, "") for col in text_columns)
                     else:
                         text = obj
                 else:
@@ -483,7 +486,13 @@ def run_prepare_dataset(cfg: dict) -> None:
                     return all(f(x) for f in filter_funcs)
                 filter_func = combined_filter_func
 
-            df_iterator = gz_data_files_iterator(data_files, text_column=cfg.get("text_column"), json_format=cfg.get("json_format", False), filter_func=filter_func)
+            df_iterator = gz_data_files_iterator(
+                data_files,
+                text_column=cfg.get("text_column", None), 
+                text_columns=cfg.get("text_columns", None),
+                json_format=cfg.get("json_format", False), 
+                filter_func=filter_func
+            )
 
             stats = tokenize_iterator(
                 iterator=df_iterator,
