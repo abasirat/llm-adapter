@@ -131,7 +131,13 @@ def gz_data_files_iterator(
     filter_func=None,
 ):
     for file_path in file_paths:
-        with gzip.open(file_path, "rt", encoding="utf-8") as f:
+        # if file is gzipped, open with gzip, otherwise open normally
+        if file_path.endswith(".gz"):
+            open_func = gzip.open
+        else:
+            open_func = open
+
+        with open_func(file_path, "rt", encoding="utf-8") as f:
             for line in f:
                 line = line.rstrip("\n")
 
