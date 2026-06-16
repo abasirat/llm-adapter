@@ -297,6 +297,11 @@ def _build_text_getter(cfg: dict, dataset, tokenizer):
     text_template = cfg.get("text_template")
     if text_template:
         return lambda x, _t=text_template: _t.format(**x)
+    if cfg.get("text_columns") is not None:
+        cols = cfg["text_columns"]
+        if not isinstance(cols, list):
+            raise ValueError("text_columns must be a list of column names.")
+        return lambda x: " ".join(x[col] for col in cols)
     col = cfg.get("text_column", "text")
     return lambda x: x[col]
 
