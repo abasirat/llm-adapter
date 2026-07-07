@@ -72,6 +72,10 @@ def setup_model(model_name='gpt2',
         
         dropout = adapter_config.lora_dropout
         print_trainable_parameters(model, "Lora")
+    elif adapter_type == 'prefix_encoder':
+        model = get_peft_model(model, adapter_config)
+        dropout = 0.1  # Default dropout for prefix encoder
+        print_trainable_parameters(model, "Prefix Encoder")
     elif adapter_type == 'none':
         dropout = 0.1
         print("No adapter, only tailoring")

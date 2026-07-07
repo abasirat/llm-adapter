@@ -12,7 +12,7 @@ import math
 import wandb
 from datetime import datetime
 from llm_adapter import setup_model, save_model, load_model
-from peft import LoraConfig, TaskType
+from peft import LoraConfig, TaskType, PromptEncoderConfig
 import random
 import yaml
 
@@ -892,6 +892,8 @@ def main():
     lora_dropout = adapter_cfg.get("lora_dropout", 0.1)
     lora_target_modules = adapter_cfg.get("lora_target_modules", ["attn.c_proj"])
 
+    prompt_encoder_num_virtual_tokens = adapter_cfg.get("prompt_encoder_num_virtual_tokens", 20)
+
     if isinstance(lora_target_modules, str):
         lora_target_modules = [m.strip() for m in lora_target_modules.split(",")]
 
@@ -929,6 +931,8 @@ def main():
             
         elif adapter_type == "lora":
             experiment_description += f"_r{lora_r}_alpha{lora_alpha}_drop{lora_dropout}"
+        elif adapter_type == "prefix_encoder":
+            experiment_description += f"_virtual_tokens{prompt_encoder_num_virtual_tokens}"
         else:
             raise ValueError(f"Unknown adapter_type: {adapter_type}")
         experiment_description += f"_bs{batch_size}_lr{learning_rate:.0e}_ctx{context_size}_epochs{num_epochs}_seed{seed}"
@@ -1056,6 +1060,11 @@ def main():
                 lora_dropout=lora_dropout,
                 fan_in_fan_out=True, 
             )
+        
+        elif adapter_type == "prefix_encoder":
+            adapter_config = {
+                "num_virtual_tokens": prompt_encoder_num_virtual_tokens,
+            }
 
         else:
             raise ValueError(f"Unknown adapter_type: {adapter_type}")
