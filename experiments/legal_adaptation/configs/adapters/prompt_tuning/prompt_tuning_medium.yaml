@@ -2,4 +2,7 @@ adapter_type: prefix_encoder
 
 prompt_encoder_num_virtual_tokens: 20
 
-
+variational_modeling: false
+shift_regularization: false
+aggregation_strategy: null
+prefix_length: 0
