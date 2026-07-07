@@ -1062,10 +1062,10 @@ def main():
             )
         
         elif adapter_type == "prefix_encoder":
-            adapter_config = {
-                "num_virtual_tokens": prompt_encoder_num_virtual_tokens,
-                "base_model_name_or_path": model_name,
-            }
+            adapter_config = PromptEncoderConfig(
+                task_type=TaskType.CAUSAL_LM,
+                num_virtual_tokens=prompt_encoder_num_virtual_tokens,
+            )
 
         else:
             raise ValueError(f"Unknown adapter_type: {adapter_type}")
