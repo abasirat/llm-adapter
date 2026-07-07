@@ -1,0 +1,5 @@
+adapter_type: prefix_encoder
+
+prompt_encoder_num_virtual_tokens: 20
+
+
