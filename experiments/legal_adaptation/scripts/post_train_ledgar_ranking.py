@@ -215,40 +215,44 @@ def _evaluate_full_label_accuracy(
     The returned loss is defined as 1 - accuracy so existing checkpoint logic
     can continue to minimize it.
     """
-    model.eval()
-    total_correct = 0
-    total_examples = 0
-    all_label_ids = list(range(len(label_names)))
+    was_training = model.training
+    try:
+        model.eval()
+        total_correct = 0
+        total_examples = 0
+        all_label_ids = list(range(len(label_names)))
 
-    with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Full-label validation"):
-            texts = batch["texts"]
-            gold_label_ids = batch["label_ids"].tolist()
+        with torch.no_grad():
+            for batch in tqdm(dataloader, desc="Full-label validation"):
+                texts = batch["texts"]
+                gold_label_ids = batch["label_ids"].tolist()
 
-            chunk_scores: List[torch.Tensor] = []
-            for start in range(0, len(all_label_ids), label_batch_size):
-                label_chunk = all_label_ids[start:start + label_batch_size]
-                scores = _score_candidates(
-                    model=model,
-                    tokenizer=tokenizer,
-                    texts=texts,
-                    candidate_label_ids=[label_chunk for _ in texts],
-                    label_token_cache=label_token_cache,
-                    device=device,
-                    max_length=max_length,
-                    truncation_side=truncation_side,
-                )
-                chunk_scores.append(scores)
+                chunk_scores: List[torch.Tensor] = []
+                for start in range(0, len(all_label_ids), label_batch_size):
+                    label_chunk = all_label_ids[start:start + label_batch_size]
+                    scores = _score_candidates(
+                        model=model,
+                        tokenizer=tokenizer,
+                        texts=texts,
+                        candidate_label_ids=[label_chunk for _ in texts],
+                        label_token_cache=label_token_cache,
+                        device=device,
+                        max_length=max_length,
+                        truncation_side=truncation_side,
+                    )
+                    chunk_scores.append(scores)
 
-            scores = torch.cat(chunk_scores, dim=1)
-            predictions = scores.argmax(dim=1)
-            gold = torch.tensor(gold_label_ids, device=predictions.device)
-            total_correct += int((predictions == gold).sum().item())
-            total_examples += len(texts)
+                scores = torch.cat(chunk_scores, dim=1)
+                predictions = scores.argmax(dim=1)
+                gold = torch.tensor(gold_label_ids, device=predictions.device)
+                total_correct += int((predictions == gold).sum().item())
+                total_examples += len(texts)
 
-    accuracy = total_correct / max(total_examples, 1)
-    loss = 1.0 - accuracy
-    return loss, accuracy
+        accuracy = total_correct / max(total_examples, 1)
+        loss = 1.0 - accuracy
+        return loss, accuracy
+    finally:
+        model.train(was_training)
 
 
 def _evaluate_ranking_loss(
@@ -264,46 +268,50 @@ def _evaluate_ranking_loss(
     margin: float,
     seed: int,
 ) -> tuple[float, float]:
-    model.eval()
-    total_loss = 0.0
-    total_correct = 0
-    total_examples = 0
-    rng = random.Random(seed)
+    was_training = model.training
+    try:
+        model.eval()
+        total_loss = 0.0
+        total_correct = 0
+        total_examples = 0
+        rng = random.Random(seed)
 
-    with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Ranking validation"):
-            texts = batch["texts"]
-            gold_label_ids = batch["label_ids"].tolist()
-            candidate_label_ids = [
-                [gold_label_id] + _sample_negative_label_ids(gold_label_id, len(label_names), num_negatives, rng)
-                for gold_label_id in gold_label_ids
-            ]
+        with torch.no_grad():
+            for batch in tqdm(dataloader, desc="Ranking validation"):
+                texts = batch["texts"]
+                gold_label_ids = batch["label_ids"].tolist()
+                candidate_label_ids = [
+                    [gold_label_id] + _sample_negative_label_ids(gold_label_id, len(label_names), num_negatives, rng)
+                    for gold_label_id in gold_label_ids
+                ]
 
-            scores = _score_candidates(
-                model=model,
-                tokenizer=tokenizer,
-                texts=texts,
-                candidate_label_ids=candidate_label_ids,
-                label_token_cache=label_token_cache,
-                device=device,
-                max_length=max_length,
-                truncation_side=truncation_side,
-            )
+                scores = _score_candidates(
+                    model=model,
+                    tokenizer=tokenizer,
+                    texts=texts,
+                    candidate_label_ids=candidate_label_ids,
+                    label_token_cache=label_token_cache,
+                    device=device,
+                    max_length=max_length,
+                    truncation_side=truncation_side,
+                )
 
-            positive_scores = scores[:, :1]
-            negative_scores = scores[:, 1:]
-            if negative_scores.numel() == 0:
-                loss = -positive_scores.mean()
-            else:
-                loss = F.relu(margin - positive_scores + negative_scores).mean()
+                positive_scores = scores[:, :1]
+                negative_scores = scores[:, 1:]
+                if negative_scores.numel() == 0:
+                    loss = -positive_scores.mean()
+                else:
+                    loss = F.relu(margin - positive_scores + negative_scores).mean()
 
-            total_loss += loss.item() * len(texts)
-            total_correct += int((scores.argmax(dim=1) == 0).sum().item())
-            total_examples += len(texts)
+                total_loss += loss.item() * len(texts)
+                total_correct += int((scores.argmax(dim=1) == 0).sum().item())
+                total_examples += len(texts)
 
-    avg_loss = total_loss / max(total_examples, 1)
-    accuracy = total_correct / max(total_examples, 1)
-    return avg_loss, accuracy
+        avg_loss = total_loss / max(total_examples, 1)
+        accuracy = total_correct / max(total_examples, 1)
+        return avg_loss, accuracy
+    finally:
+        model.train(was_training)
 
 
 def run_ledgar_label_ranking_post_training(

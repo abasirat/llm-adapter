@@ -847,6 +847,9 @@ class LayerAdapter(torch.nn.Module):
 
         self.layer_representations = []
 
+        # Run the encoder in no_grad mode to save memory and avoid computing gradients for the encoder parameters
+        # Also run the encoder on the eval mode to avoid computing gradients for the encoder parameters
+        self.encoder.eval()
         with torch.no_grad():
             #self.encoder.to(device=device, dtype=dtype)
             encoder_outputs = self.encoder(

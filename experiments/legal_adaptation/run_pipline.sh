@@ -93,6 +93,7 @@ run_experiment() {
         --training_config "${TRAINING_CONFIG}" \
         --model_path "${CHECKPOINT_PATH}" \
         --train_bin_path "${BINARY_TOKENIZED_TRAIN_PATH}" \
+        --val_bin_path "${BINARY_TOKENIZED_VAL_PATH}" \
         --history_path "${TRAIN_HISTORY_PATH}" \
         --experiment_name "${RUN_NAME}" \
         --seed "${SEED}" 

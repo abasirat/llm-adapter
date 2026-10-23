@@ -353,6 +353,7 @@ def run_post_training(
                 layer_adapter_max_temperature=layer_adapter_max_temp,
                 layer_adapter_min_temperature=layer_adapter_min_temp,
                 aggregation_strategy=aggregation_strategy,
+                seed=seed,
             )
         finally:
             wandb.finish()

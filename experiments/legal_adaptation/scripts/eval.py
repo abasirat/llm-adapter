@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import copy
 import csv
+import hashlib
 import importlib
 import json
 import os
@@ -27,6 +28,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, MutableMapping, Optional, Tuple
+from uuid import uuid4
 
 try:
     import yaml
@@ -96,27 +98,50 @@ def normalise_style_keys(eval_cfg: Dict[str, Any]) -> Dict[str, Any]:
     return eval_cfg
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _model_identity(model_name_or_path: str) -> Dict[str, str]:
+    """Identify local contents, or the model ID for a remote dependency."""
+    path = Path(model_name_or_path).expanduser()
+    if path.is_file():
+        return {"kind": "file", "path": str(path.resolve()), "sha256": _file_sha256(path)}
+    if path.is_dir():
+        digest = hashlib.sha256()
+        for file_path in sorted(p for p in path.rglob("*") if p.is_file()):
+            digest.update(file_path.relative_to(path).as_posix().encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(_file_sha256(file_path).encode("ascii"))
+            digest.update(b"\n")
+        return {"kind": "directory", "path": str(path.resolve()), "sha256": digest.hexdigest()}
+    return {"kind": "huggingface", "model_id": model_name_or_path}
+
+
 def post_train_for_eval(
     model_name_or_path: str,
     device: str,
     post_training_cfg: Dict[str, Any],
+    *,
+    seed: Optional[int] = None,
 ) -> str:
-    """Fine-tune adapter parameters for a task and return the checkpoint path.
-
-    Checks for an existing checkpoint first (respects ``force_retrain``).
-    Lazily imports ``post_train_task`` so the heavy training dependencies are
-    only loaded when post-training is actually requested.
-    """
+    """Return a verified matching checkpoint, or train in a fresh attempt directory."""
     output_dir = post_training_cfg.get("output_dir")
     if not output_dir:
         raise ValueError("post_training.output_dir must be specified.")
-
-    best_checkpoint = os.path.join(output_dir, "checkpoint-best")
-    force_retrain   = post_training_cfg.get("force_retrain", False)
-
-    if not force_retrain and os.path.exists(best_checkpoint):
-        print(f"\n[post_training] Reusing existing checkpoint: {best_checkpoint}")
-        return best_checkpoint
+    output_root = Path(output_dir).expanduser().resolve()
+    source_path = Path(model_name_or_path).expanduser()
+    if source_path.is_dir():
+        try:
+            output_root.relative_to(source_path.resolve())
+        except ValueError:
+            pass
+        else:
+            raise ValueError("Post-training output must be outside the source model directory.")
 
     training_config_path = post_training_cfg.get("training_config")
     data_config_path     = post_training_cfg.get("data_config")
@@ -129,13 +154,51 @@ def post_train_for_eval(
     training_cfg = load_yaml(training_config_path)
     data_cfg     = load_yaml(data_config_path)
 
-    training_cfg["force_retrain"] = force_retrain
+    training_cfg["seed"] = int(seed if seed is not None else training_cfg.get("seed", 42))
     data_cfg["force_prepare"] = bool(post_training_cfg.get("force_prepare", data_cfg.get("force_prepare", True)))
 
     # Allow selected post_training values to override task/data defaults.
     for key in ("split", "max_examples", "max_label_length", "truncation_side"):
         if key in post_training_cfg and post_training_cfg[key] is not None:
             data_cfg[key] = post_training_cfg[key]
+
+    # Force flags and output locations do not change the learned model identity.
+    provenance = {
+        "source_model": _model_identity(model_name_or_path),
+        "training_config": {k: v for k, v in training_cfg.items() if k != "force_retrain"},
+        "data_config": {k: v for k, v in data_cfg.items() if k not in {"force_prepare", "output_dir"}},
+    }
+    if data_cfg.get("tokenizer_name"):
+        provenance["tokenizer"] = _model_identity(data_cfg["tokenizer_name"])
+    fingerprint = hashlib.sha256(
+        json.dumps(provenance, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    cache_dir = output_root / fingerprint
+    manifest_path = cache_dir / "manifest.json"
+
+    if not post_training_cfg.get("force_retrain", False):
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if (
+                isinstance(manifest, dict)
+                and manifest.get("schema_version") == 1
+                and manifest.get("fingerprint") == fingerprint
+                and manifest.get("provenance") == provenance
+            ):
+                checkpoint = (cache_dir / manifest["checkpoint"]).resolve()
+                checkpoint.relative_to(cache_dir)
+                if checkpoint.is_file() and _file_sha256(checkpoint) == manifest.get("checkpoint_sha256"):
+                    print(f"\n[post_training] Reusing verified checkpoint: {checkpoint}")
+                    return str(checkpoint)
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+
+    # Never let old best/trace files satisfy the training helper's internal checks.
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path.unlink(missing_ok=True)
+    attempt_dir = cache_dir / f"attempt-{uuid4().hex}"
+    attempt_dir.mkdir()
+    training_cfg["force_retrain"] = True
 
     # Make post_train_task importable (lives in the same scripts/ directory).
     _scripts_dir = str(Path(__file__).parent)
@@ -144,13 +207,35 @@ def post_train_for_eval(
 
     from post_train_task import run_post_training  # noqa: PLC0415
 
-    return run_post_training(
+    checkpoint = Path(run_post_training(
         model_path=model_name_or_path,
-        training_cfg=training_cfg,
-        data_cfg=data_cfg,
-        output_dir=output_dir,
+        training_cfg=copy.deepcopy(training_cfg),
+        data_cfg=copy.deepcopy(data_cfg),
+        output_dir=str(attempt_dir),
         device=device,
-    )
+    )).expanduser().resolve()
+    checkpoint.relative_to(attempt_dir)
+    if not checkpoint.is_file():
+        raise FileNotFoundError(f"Post-training did not produce the returned checkpoint: {checkpoint}")
+    if _model_identity(model_name_or_path) != provenance["source_model"]:
+        raise RuntimeError("The source model changed during post-training; no reusable checkpoint was recorded.")
+    if "tokenizer" in provenance and _model_identity(data_cfg["tokenizer_name"]) != provenance["tokenizer"]:
+        raise RuntimeError("The tokenizer changed during post-training; no reusable checkpoint was recorded.")
+
+    manifest = {
+        "schema_version": 1,
+        "fingerprint": fingerprint,
+        "provenance": provenance,
+        "checkpoint": checkpoint.relative_to(cache_dir).as_posix(),
+        "checkpoint_sha256": _file_sha256(checkpoint),
+    }
+    temporary_manifest = cache_dir / f".manifest-{uuid4().hex}.tmp"
+    try:
+        temporary_manifest.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        os.replace(temporary_manifest, manifest_path)
+    finally:
+        temporary_manifest.unlink(missing_ok=True)
+    return str(checkpoint)
 
 
 def build_evaluator_kwargs(
@@ -268,6 +353,7 @@ def prepare_json_output(
         if "__error__" in metrics:
             output["results"][name] = {
                 "status": "failed",
+                "evaluated_model_path": metrics.get("_evaluated_model_path", model_name_or_path),
                 "error": metrics["__error__"],
             }
         else:
@@ -275,6 +361,7 @@ def prepare_json_output(
             raw = metrics.get("_raw", {})
             output["results"][name] = {
                 "status": "ok",
+                "evaluated_model_path": metrics.get("_evaluated_model_path", model_name_or_path),
                 "summary": summary,
                 "raw": raw,
             }
@@ -463,7 +550,11 @@ def main() -> None:
     from evaluations.utils import safe_save_json, select_device
 
     model_name_or_path = cfg["model_name_or_path"]
-    output_file = os.path.join(args.output_dir, "results.json")
+    output_dir = cfg.get("output_dir")
+    output_file = os.path.join(output_dir, "results.json") if output_dir else cfg.get("output_file")
+    if not output_file:
+        raise ValueError("An output directory or output_file must be provided.")
+    output_dir = output_dir or str(Path(output_file).parent)
     device = select_device(cfg.get("device", "auto"))
 
     print(f"Device: {device}")
@@ -487,13 +578,14 @@ def main() -> None:
         # Optional task-specific post-training before evaluation.
         eval_model_path = model_name_or_path
         post_cfg = (this_eval_cfg.get("post_training") or {})
-        post_cfg["output_dir"] = post_cfg.get("output_dir") or os.path.join(args.output_dir, f"post_training_{name}")
+        post_cfg["output_dir"] = post_cfg.get("output_dir") or os.path.join(output_dir, f"post_training_{name}")
         if post_cfg.get("enabled", False):
             print(f"\n[post_training] Starting post-training for evaluation: {name}")
             eval_model_path = post_train_for_eval(
                 model_name_or_path=model_name_or_path,
                 device=device,
                 post_training_cfg=post_cfg,
+                seed=cfg.get("seed"),
             )
 
         all_metrics[name] = run_evaluator(
@@ -503,6 +595,7 @@ def main() -> None:
             device=device,
             kwargs=kwargs,
         )
+        all_metrics[name]["_evaluated_model_path"] = eval_model_path
 
     print_summary(model_name_or_path, all_metrics)
 

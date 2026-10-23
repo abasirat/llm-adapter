@@ -39,18 +39,19 @@ evaluations:
       enabled: false
       training_config: configs/evaluation/post_training/task_ft.yaml
       data_config: configs/evaluation/post_training/data/casehold.yaml
-      output_dir: outputs/post_trained/casehold
+      output_dir: null
       force_retrain: false
       force_prepare: true
 
   ledgar:
     enabled: false
     split: test
+    label_batch_size: 8
     post_training:
       enabled: false
       training_config: configs/evaluation/post_training/task_ft.yaml
       data_config: configs/evaluation/post_training/data/ledgar.yaml
-      output_dir: outputs/post_trained/ledgar
+      output_dir: null
       force_retrain: false
       force_prepare: true
   unfair_tos:
@@ -60,7 +61,7 @@ evaluations:
       enabled: false
       training_config: configs/evaluation/post_training/task_ft.yaml
       data_config: configs/evaluation/post_training/data/unfair_tos.yaml
-      output_dir: outputs/post_trained/unfair_tos
+      output_dir: null
       force_retrain: false
       force_prepare: true
 

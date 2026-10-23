@@ -11,7 +11,7 @@ adam_beta2: 0.999
 weight_decay: 0.01
 gradient_clip_norm: 1.0
 
-val_fraction: 0.01
+val_fraction: 0.01  # Fallback only; ignored when held-out validation files are supplied.
 val_interval: 100
 
 early_stopping_patience: 3
