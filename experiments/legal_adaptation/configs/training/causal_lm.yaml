@@ -23,6 +23,9 @@ kl_loss_weight: 1.0e-2
 kl_warmup_fraction: 0.2
 kl_schedule: linear
 
+# Used when the adapter configuration enables shift_regularization.
+shift_regularization_weight: 1.0
+
 use_amp: true
 compile_model: true
 

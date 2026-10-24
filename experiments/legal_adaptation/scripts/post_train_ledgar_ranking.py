@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import random
 from typing import Any, Dict, List, Sequence, cast
 
@@ -9,6 +10,7 @@ from datasets import load_dataset
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
+import wandb
 
 from llm_adapter import save_model
 
@@ -329,7 +331,15 @@ def run_ledgar_label_ranking_post_training(
     aggregation_strategy: str = "attention",
     layer_adapter_max_temp: float = 2.0,
     layer_adapter_min_temp: float = 0.8,
+    shift_regularization_weight: float = 1.0,
 ) -> None:
+    try:
+        shift_regularization_weight = float(shift_regularization_weight)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("shift_regularization_weight must be finite and non-negative.") from exc
+    if not math.isfinite(shift_regularization_weight) or shift_regularization_weight < 0.0:
+        raise ValueError("shift_regularization_weight must be finite and non-negative.")
+    effective_shift_weight = shift_regularization_weight if shift_regularization else 0.0
     seed = _as_int(training_cfg.get("seed"), 42)
     batch_size = _as_int(training_cfg.get("batch_size"), 8)
     num_workers = _as_int(training_cfg.get("num_workers"), 0)
@@ -418,6 +428,8 @@ def run_ledgar_label_ranking_post_training(
     print(f"  max_label_length: {max_label_length}")
     print(f"  truncation_side: {truncation_side}")
     print(f"  validation_label_batch_size: {validation_label_batch_size}")
+    print(f"  shift_regularization: {shift_regularization}")
+    print(f"  shift_regularization_weight: {shift_regularization_weight}")
 
     for epoch in range(num_epochs):
         raw_model.train()
@@ -435,6 +447,9 @@ def run_ledgar_label_ranking_post_training(
             ]
 
             optimizer.zero_grad(set_to_none=True)
+            shift_loss = None
+            shift_penalty = None
+            steering_metrics = {}
 
             current_temperature = None
             if adapter_type == "layer_adapter" and aggregation_strategy == "attention":
@@ -461,14 +476,23 @@ def run_ledgar_label_ranking_post_training(
                 positive_scores = scores[:, :1]
                 negative_scores = scores[:, 1:]
                 if negative_scores.numel() == 0:
-                    loss = -positive_scores.mean()
+                    ranking_loss = -positive_scores.mean()
                 else:
-                    loss = F.relu(margin - positive_scores + negative_scores).mean()
+                    ranking_loss = F.relu(margin - positive_scores + negative_scores).mean()
+                loss = ranking_loss
 
                 if adapter_type == "layer_adapter":
                     shift_loss = raw_model.transformer.encoder.get_delta_loss()
+                    shift_penalty = effective_shift_weight * shift_loss
                     if shift_regularization:
-                        loss = loss + shift_loss
+                        loss = loss + shift_penalty
+                    if (step + 1) % progress_interval == 0:
+                        get_metrics = getattr(raw_model.transformer.encoder, "get_steering_metrics", None)
+                        if callable(get_metrics):
+                            steering_metrics = {
+                                f"steering/{key}": float(value)
+                                for key, value in get_metrics().items()
+                            }
 
                 if adapter_type == "layer_adapter" and variational_modeling:
                     loss = loss + kl_loss_weight * raw_model.transformer.encoder.get_kl_loss()
@@ -491,11 +515,32 @@ def run_ledgar_label_ranking_post_training(
 
             if step % progress_interval == 0:
                 sampled_accuracy = float((scores.argmax(dim=1) == 0).float().mean().item())
-                progress_bar.set_postfix(
-                    loss=f"{loss.detach().float().item():.4f}",
-                    sampled_acc=f"{sampled_accuracy:.3f}",
-                    temp=(f"{current_temperature:.2f}" if current_temperature is not None else "-")
-                )
+                log_dict = {
+                    "train/ranking_loss": ranking_loss.detach().float().item(),
+                    "train/total_loss": loss.detach().float().item(),
+                    "train/sampled_accuracy": sampled_accuracy,
+                    **steering_metrics,
+                }
+                postfix = {
+                    "loss": f"{log_dict['train/total_loss']:.4f}",
+                    "sampled_acc": f"{sampled_accuracy:.3f}",
+                    "temp": f"{current_temperature:.2f}" if current_temperature is not None else "-",
+                }
+                if shift_loss is not None:
+                    log_dict.update({
+                        "train/shift_loss": shift_loss.detach().float().item(),
+                        "train/shift_regularization_weight": effective_shift_weight,
+                        "train/shift_penalty": shift_penalty.detach().float().item(),
+                    })
+                    postfix.update({
+                        "shift_loss": f"{log_dict['train/shift_loss']:.4f}",
+                        "shift_weight": f"{effective_shift_weight:.3g}",
+                        "shift_penalty": f"{log_dict['train/shift_penalty']:.4f}",
+                        **{key: f"{value:.3g}" for key, value in steering_metrics.items()},
+                    })
+                progress_bar.set_postfix(postfix)
+                if wandb.run is not None:
+                    wandb.log(log_dict, step=step)
 
             if val_dataloader is not None and (step % val_interval == 0):
                 val_loss, val_acc = _evaluate_full_label_accuracy(

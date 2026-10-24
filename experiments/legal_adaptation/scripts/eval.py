@@ -42,6 +42,9 @@ except ImportError as exc:  # pragma: no cover
 #   evaluate(model_name_or_path: str, device: str, **kwargs) -> dict
 # ---------------------------------------------------------------------------
 
+# Bump when task-training semantics change, even for the same input checkpoint.
+POST_TRAINING_IMPLEMENTATION_VERSION = 2
+
 EVALUATORS: List[Tuple[str, str]] = [
     ("truthfulqa", "evaluations.truthfulqa.evaluator"),
     ("lambada", "evaluations.lambada.evaluator"),
@@ -164,6 +167,7 @@ def post_train_for_eval(
 
     # Force flags and output locations do not change the learned model identity.
     provenance = {
+        "implementation_version": POST_TRAINING_IMPLEMENTATION_VERSION,
         "source_model": _model_identity(model_name_or_path),
         "training_config": {k: v for k, v in training_cfg.items() if k != "force_retrain"},
         "data_config": {k: v for k, v in data_cfg.items() if k not in {"force_prepare", "output_dir"}},

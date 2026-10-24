@@ -791,7 +791,15 @@ def train(
     history_path=None,
     resume_state=None,
     seed=42,
+    shift_regularization_weight=1.0,
 ):
+    try:
+        shift_regularization_weight = float(shift_regularization_weight)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("shift_regularization_weight must be finite and nonnegative.") from exc
+    if not math.isfinite(shift_regularization_weight) or shift_regularization_weight < 0:
+        raise ValueError("shift_regularization_weight must be finite and nonnegative.")
+    effective_shift_weight = shift_regularization_weight if shift_regularization else 0.0
     raw_model = model.to(device)
     trainable_params = [p for p in raw_model.parameters() if p.requires_grad]
 
@@ -829,6 +837,8 @@ def train(
         "adapter_type": adapter_type, "variational_modeling": variational_modeling,
         "base_model": getattr(raw_model.config, "name_or_path", None),
         "shift_regularization": shift_regularization, "aggregation_strategy": aggregation_strategy,
+        "shift_regularization_weight": shift_regularization_weight,
+        "steering_regularization_version": 2,
         "early_stopping_patience": early_stopping_patience,
         "early_stopping_min_delta": early_stopping_min_delta,
         "progress_interval": progress_interval, "val_interval": val_interval,
@@ -1000,12 +1010,17 @@ def train(
 
             lm_loss = outputs.loss
             loss = lm_loss
+            steering_metrics = {}
 
             if adapter_type == 'layer_adapter':
                 shift_loss = raw_model.transformer.encoder.get_delta_loss()
                 if shift_regularization:
-                    loss += shift_loss
+                    loss = loss + effective_shift_weight * shift_loss
                 acc_shift_loss.append(shift_loss.detach().float().item())
+                if ((i + 1) % progress_interval == 0 or i + 1 >= dataloader_len):
+                    adapter = raw_model.transformer.encoder
+                    if hasattr(adapter, "get_steering_metrics"):
+                        steering_metrics = adapter.get_steering_metrics()
 
             # If using layer_adapter with variational modeling, add KL divergence loss
             if adapter_type == 'layer_adapter' and variational_modeling:
@@ -1016,7 +1031,7 @@ def train(
                     else kl_loss_weight
                 )
                 
-                loss += current_kl_weight * kl_loss 
+                loss = loss + current_kl_weight * kl_loss
                 acc_kl_loss.append(kl_loss.detach().float().item())
                 
             update_learning_rate = optimizer.param_groups[0]["lr"]
@@ -1062,6 +1077,8 @@ def train(
                 avg_acc_loss = sum(acc_loss) / len(acc_loss) if acc_loss else 0.0
                 avg_acc_kl_loss = sum(acc_kl_loss) / len(acc_kl_loss) if acc_kl_loss else 0.0
                 avg_acc_shift_loss = sum(acc_shift_loss) / len(acc_shift_loss) if acc_shift_loss else 0.0
+                steering_log = {f"steering/{key}": value.detach().float().item()
+                                for key, value in steering_metrics.items()}
                 description = (
                     f"batch loss: {avg_acc_loss:.2f}"
                     + (f", LR: {update_learning_rate:.0e}" if scheduler else "")
@@ -1069,6 +1086,8 @@ def train(
                     + (f", KL loss: {avg_acc_kl_loss:.4f}" if acc_kl_loss else "")
                     + (f", Shift loss: {avg_acc_shift_loss:.4f}" if acc_shift_loss else "")
                     + (f", Temp: {current_temperature:.2f}" if current_temperature is not None else "")
+                    + (f", Strength: {steering_log['steering/strength']:.4g}"
+                       if steering_log else "")
                 )
                 progress_bar.set_description(description)
 
@@ -1081,6 +1100,12 @@ def train(
 
                 if scheduler is not None:
                     log_dict["train/learning_rate"] = update_learning_rate
+
+                if adapter_type == "layer_adapter":
+                    log_dict.update(steering_log)
+                    log_dict["train/shift_loss"] = avg_acc_shift_loss
+                    log_dict["train/shift_regularization_weight"] = effective_shift_weight
+                    log_dict["train/shift_penalty"] = effective_shift_weight * avg_acc_shift_loss
 
                 if adapter_type == 'layer_adapter' and aggregation_strategy == "attention":
                     #log_dict["residual_scaler"] = raw_model.transformer.encoder.adapter_scale.item()
@@ -1403,6 +1428,7 @@ def main():
     variational_modeling = adapter_cfg.get("variational_modeling", False)
     aggregation_strategy = adapter_cfg.get("aggregation_strategy", "attention")
     shift_regularization = adapter_cfg.get("shift_regularization", False)
+    shift_regularization_weight = training_cfg.get("shift_regularization_weight", 1.0)
 
     #-------------------------
     # Model path and experiment description
@@ -1550,6 +1576,7 @@ def main():
                 "variational_modeling": variational_modeling,
                 "aggregation_strategy": aggregation_strategy,
                 "shift_regularization": shift_regularization,
+                "steering_strength_init": adapter_cfg.get("steering_strength_init", 0.01),
             }
 
         elif adapter_type == "lora":
@@ -1718,6 +1745,7 @@ def main():
         history_path=history_path,
         resume_state=resume_state,
         seed=seed,
+        shift_regularization_weight=shift_regularization_weight,
     )
 
     save_model(model, adapter_type, adapter_config, model_path)

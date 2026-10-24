@@ -6,6 +6,7 @@ from peft import get_peft_model
 from wechsel import WECHSEL, load_embeddings
 import os
 import pdb
+import warnings
 
 def setup_model(model_name='gpt2', 
                 adapter_type='none', 
@@ -130,6 +131,11 @@ def save_model(
         if param.requires_grad
     }
 
+    if adapter_type == "layer_adapter":
+        adapter_config = dict(adapter_config or {})
+        adapter = getattr(model.transformer, "encoder", model.transformer)
+        adapter_config["steering_strength_init"] = getattr(adapter, "steering_strength_init", 0.01)
+
     payload = {
         "learnable_params": learnable_params,
         "model_name": model.config.name_or_path,
@@ -153,6 +159,22 @@ def load_model(param_path, tokenizer_path=None, freeze_lm_head=True):
     num_tailor_layers = saved_params["num_tailor_layers"]
     adapter_type = saved_params["adapter_type"]
     adapter_config = saved_params["adapter_config"]
+    if adapter_type == "layer_adapter":
+        adapter_config = dict(adapter_config or {})
+        has_strength = any(
+            name == "steering_strength" or name.endswith(".steering_strength")
+            for name in saved_params["learnable_params"]
+        )
+        if not has_strength:
+            if "steering_strength_init" in adapter_config:
+                raise ValueError("Adapter checkpoint is missing its learned steering_strength parameter.")
+            # Legacy adapters applied their steering at full strength. Preserve
+            # their predictions when introducing the new learnable parameter.
+            adapter_config["steering_strength_init"] = 1.0
+            warnings.warn(
+                "Loading a legacy adapter without steering_strength; using 1.0 to preserve its behavior.",
+                UserWarning,
+            )
     wechsel_config = saved_params.get("wechsel_config", None)
 
     model, tokenizer = setup_model(
@@ -167,6 +189,11 @@ def load_model(param_path, tokenizer_path=None, freeze_lm_head=True):
 
     # Restore trainable params
     missing, unexpected = model.load_state_dict(saved_params["learnable_params"], strict=False)
+    if adapter_type == "layer_adapter" and has_strength:
+        missing_strength = [name for name in missing if name.rsplit(".", 1)[-1] == "steering_strength"]
+        unexpected_strength = [name for name in unexpected if name.rsplit(".", 1)[-1] == "steering_strength"]
+        if missing_strength or unexpected_strength:
+            raise ValueError("Adapter checkpoint steering_strength does not match the model parameter.")
 
     print(f"Parameters loaded from {param_path}")
     #if missing:

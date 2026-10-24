@@ -1,4 +1,5 @@
 adapter_type: layer_adapter
+steering_strength_init: 0.01
 
 num_aggregation_layers: null
 aggregation_strategy: attention

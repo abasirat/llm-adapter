@@ -1,3 +1,4 @@
+import math
 import pdb
 
 import torch
@@ -515,6 +516,7 @@ class LayerAdapter(torch.nn.Module):
         kl_reduction="mean",
         min_std=1e-6,
         shift_regularization=False, # this isn't used here, but I want to use it because I want to include it in the save model. 
+        steering_strength_init=0.01,
     ):
         super().__init__()
 
@@ -557,6 +559,15 @@ class LayerAdapter(torch.nn.Module):
         self.aggregation_strategy = aggregation_strategy
         self.need_weights = need_weights
         
+        strength_init = float(steering_strength_init)
+        if not math.isfinite(strength_init):
+            raise ValueError("steering_strength_init must be finite.")
+        self.steering_strength_init = strength_init
+        self.steering_strength = torch.nn.Parameter(torch.tensor(strength_init))
+        self.last_delta = None
+        self.last_steering_strength = None
+        self._last_steering_base_norms = None
+        self._last_steering_valid_mask = None
         self.delta_loss = None
 
         self.rep_dim = self._get_representation_dim(representation_type)
@@ -778,9 +789,55 @@ class LayerAdapter(torch.nn.Module):
         return self.variational_head.get_kl_loss()
 
     def get_delta_loss(self):
-        if self.last_delta is None:
+        """Mean squared applied steering over valid token dimensions, in FP32."""
+        if self.last_delta is None or self._last_steering_valid_mask is None:
             raise RuntimeError("No forward pass has been run yet.")
-        return self.last_delta.pow(2).mean()
+        valid = self._last_steering_valid_mask
+        delta = self.last_delta.float().masked_fill(~valid.unsqueeze(-1), 0.0)
+        denominator = (valid.sum(dtype=torch.float32) * delta.size(-1)).clamp_min(1.0)
+        return delta.square().sum(dtype=torch.float32) / denominator
+
+    @torch.no_grad()
+    def get_steering_metrics(self):
+        """Detached diagnostics for the applied steering in the latest forward.
+
+        Relative norms are computed per valid token before averaging. The
+        strength is a snapshot of the value that produced that forward, rather
+        than a parameter alias which a subsequent optimizer update can change.
+        """
+        if (self.last_delta is None or self.last_steering_strength is None
+                or self._last_steering_base_norms is None
+                or self._last_steering_valid_mask is None):
+            raise RuntimeError("No forward pass has been run yet.")
+
+        valid = self._last_steering_valid_mask
+        delta_norms = self.last_delta.detach().float().norm(dim=-1)[valid]
+        base_norms = self._last_steering_base_norms[valid]
+        zero = self.last_steering_strength.float().new_zeros(())
+        if delta_norms.numel() == 0:
+            metrics = {name: zero.clone() for name in (
+                "delta_norm_mean", "base_norm_mean", "relative_norm_mean",
+                "relative_norm_p50", "relative_norm_p95",
+            )}
+        else:
+            relative_norms = delta_norms / base_norms.clamp_min(1e-8)
+            ordered = relative_norms.sort().values
+
+            def percentile(fraction):
+                position = fraction * (ordered.numel() - 1)
+                lower = int(math.floor(position))
+                upper = min(lower + 1, ordered.numel() - 1)
+                return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
+
+            metrics = {
+                "delta_norm_mean": delta_norms.mean(),
+                "base_norm_mean": base_norms.mean(),
+                "relative_norm_mean": relative_norms.mean(),
+                "relative_norm_p50": percentile(0.50),
+                "relative_norm_p95": percentile(0.95),
+            }
+        metrics["strength"] = self.last_steering_strength.float()
+        return {name: value.detach().clone() for name, value in metrics.items()}
 
     def get_variational_stats(self):
         if self.variational_head is None:
@@ -895,16 +952,29 @@ class LayerAdapter(torch.nn.Module):
         )
 
         if self.variational_head is not None:
-            delta = self.variational_head(
+            raw_delta = self.variational_head(
                 deterministic_delta,
                 key_padding_mask=key_padding_mask,
             )
         else:
-            delta = deterministic_delta
-        
-        self.last_delta = delta
+            raw_delta = deterministic_delta
 
-        aggregated_hidden_state = encoder_outputs.last_hidden_state + delta
+        applied_delta = self.steering_strength * raw_delta
+        if key_padding_mask is not None:
+            applied_delta = applied_delta.masked_fill(key_padding_mask.unsqueeze(-1), 0.0)
+            valid_mask = ~key_padding_mask
+        else:
+            valid_mask = torch.ones(
+                applied_delta.shape[:-1], device=applied_delta.device, dtype=torch.bool,
+            )
+        self.last_delta = applied_delta
+        self.last_steering_strength = self.steering_strength.detach().clone()
+        self._last_steering_valid_mask = valid_mask.detach().clone()
+        self._last_steering_base_norms = (
+            encoder_outputs.last_hidden_state.detach().float().norm(dim=-1)
+        )
+
+        aggregated_hidden_state = encoder_outputs.last_hidden_state + applied_delta
 
         if key_padding_mask is not None:
             aggregated_hidden_state = aggregated_hidden_state.masked_fill(

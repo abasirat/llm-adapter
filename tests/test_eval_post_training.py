@@ -167,6 +167,15 @@ class PostTrainingCacheTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
         self.assertEqual([path.name for path in directory.iterdir()], ['config.json'])
 
+    def test_training_implementation_revision_invalidates_old_cached_training(self):
+        first = self.invoke()
+        with patch.object(evaluation, 'POST_TRAINING_IMPLEMENTATION_VERSION',
+                          evaluation.POST_TRAINING_IMPLEMENTATION_VERSION + 1):
+            second = self.invoke()
+            self.assertNotEqual(first, second)
+            self.assertEqual(self.invoke(), second)
+            self.assertEqual(len(self.calls), 2)
+
     def test_effective_data_override_changes_cache_and_reaches_trainer(self):
         first = self.invoke()
         cfg = {**self.cfg, 'max_label_length': 11, 'truncation_side': 'left'}

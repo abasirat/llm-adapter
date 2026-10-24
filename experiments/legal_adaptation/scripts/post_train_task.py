@@ -18,6 +18,7 @@ Can be used as a standalone script or imported from eval.py:
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 from functools import partial
@@ -78,6 +79,13 @@ def run_post_training(
          (``<output_dir>/checkpoint-best``).  Falls back to the trace
          checkpoint if no validation-driven improvement was recorded.
     """
+    try:
+        shift_regularization_weight = float(training_cfg.get("shift_regularization_weight", 1.0))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("shift_regularization_weight must be finite and non-negative.") from exc
+    if not math.isfinite(shift_regularization_weight) or shift_regularization_weight < 0.0:
+        raise ValueError("shift_regularization_weight must be finite and non-negative.")
+
     from evaluations.utils import select_device  # lazy import – avoids circular deps
 
     # Ensure prepare_dataset is importable.
@@ -178,6 +186,7 @@ def run_post_training(
     print(f"  variational_modeling: {variational_modeling}")
     print(f"  aggregation_strategy: {aggregation_strategy}")
     print(f"  shift_regularization: {shift_regularization}")
+    print(f"  shift_regularization_weight: {shift_regularization_weight}")
     print(f"  layer_adapter_max_temperature: {layer_adapter_max_temp}")
     print(f"  layer_adapter_min_temperature: {layer_adapter_min_temp}")
     print(f"  context_size: {context_size}")
@@ -210,6 +219,7 @@ def run_post_training(
                     aggregation_strategy=aggregation_strategy,
                     layer_adapter_max_temp=layer_adapter_max_temp,
                     layer_adapter_min_temp=layer_adapter_min_temp,
+                    shift_regularization_weight=shift_regularization_weight,
                 )
             finally:
                 wandb.finish()
@@ -350,6 +360,7 @@ def run_post_training(
                 kl_warmup_fraction=training_cfg.get("kl_warmup_fraction", 0.0),
                 kl_schedule=training_cfg.get("kl_schedule", "linear"),
                 shift_regularization=shift_regularization,
+                shift_regularization_weight=shift_regularization_weight,
                 layer_adapter_max_temperature=layer_adapter_max_temp,
                 layer_adapter_min_temperature=layer_adapter_min_temp,
                 aggregation_strategy=aggregation_strategy,
